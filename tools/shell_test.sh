@@ -57,7 +57,7 @@ check() {
 }
 
 echo "=== shell test ==="
-check "nyx 0.1.0 i686"           "uname reports the kernel"
+check "nyx 0.5.0 i686"           "uname reports the kernel"
 check "readme.txt"               "ls shows the seeded files"
 check "hello from a filesystem"  "cat prints file contents"
 check "shell wrote this"         "write then cat round trips"

@@ -88,9 +88,11 @@ public static class Emulator
     private const long DiskBytes = 32L * 1024 * 1024;
 
     /// <summary>
-    /// Creates the disk on first run from an image that is already formatted
-    /// and carries the sample programs. An existing disk is never touched, so
-    /// nothing the user saved is lost on an upgrade.
+    /// Creates the disk on first run. A prepared image is used if one was
+    /// embedded, otherwise the disk is left blank and the kernel formats it
+    /// on boot. The programs live in the kernel, so a blank disk is enough.
+    /// An existing disk is never touched, so nothing the user saved is lost
+    /// on an upgrade.
     /// </summary>
     public static void EnsureDisk()
     {
