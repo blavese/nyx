@@ -2,6 +2,8 @@
 #include "vga.h"
 #include "io.h"
 #include "string.h"
+#include "fb.h"
+#include "fbcon.h"
 
 #define W 80
 #define H 25
@@ -12,7 +14,10 @@ static u8 color = 0x07;
 
 static inline u16 cell(char c, u8 attr) { return (u16)c | ((u16)attr << 8); }
 
-void vga_set_color(u8 fg, u8 bg) { color = (u8)(fg | (bg << 4)); }
+void vga_set_color(u8 fg, u8 bg) {
+    color = (u8)(fg | (bg << 4));
+    if (fb_active()) fbcon_set_color(fg, bg);
+}
 u8   vga_get_color(void) { return color; }
 
 static void move_hw_cursor(void) {
@@ -22,6 +27,7 @@ static void move_hw_cursor(void) {
 }
 
 void vga_clear(void) {
+    if (fb_active()) { fbcon_clear(); return; }
     for (int i = 0; i < W * H; i++) BUF[i] = cell(' ', color);
     row = col = 0;
     move_hw_cursor();

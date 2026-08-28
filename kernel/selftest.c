@@ -14,6 +14,10 @@
 #include "diskfs.h"
 #include "net.h"
 #include "rtl8139.h"
+#include "fb.h"
+#include "fbcon.h"
+#include "mouse.h"
+#include "font.h"
 
 static int passed, failed;
 
@@ -160,6 +164,36 @@ static void test_net(void) {
     }
 }
 
+
+static void test_video(void) {
+    if (!fb_active()) { kprintf("  SKIP  no framebuffer\n"); return; }
+    ok("mode is the one that was asked for", fb_width() == 1024 && fb_height() == 768);
+    ok("pitch matches the width", fb_pitch() == fb_width() * 4);
+    ok("text grid derives from the font", fbcon_cols() == fb_width() / FONT_W);
+
+    /* Write a pixel and read it back out of the back buffer. */
+    u32 probe = RGB(0x12, 0x34, 0x56);
+    u32 keep = fb_get(900, 700);
+    fb_put(900, 700, probe);
+    ok("pixel round trips", fb_get(900, 700) == probe);
+
+    fb_rect(880, 690, 20, 20, RGB(1, 2, 3));
+    ok("rect fills its interior", fb_get(890, 700) == RGB(1, 2, 3));
+    ok("rect stops at its edge", fb_get(905, 700) != RGB(1, 2, 3));
+    fb_put(900, 700, keep);
+
+    bool inked = false;
+    for (u32 y = 0; y < FONT_H; y++) if (font8x16[(u8)'A' - FONT_FIRST][y]) inked = true;
+    ok("font has glyph data", inked);
+}
+
+static void test_mouse(void) {
+    if (!mouse_present()) { kprintf("  SKIP  no mouse\n"); return; }
+    ok("pointer starts on screen",
+       mouse_x() >= 0 && mouse_x() < (i32)fb_width() &&
+       mouse_y() >= 0 && mouse_y() < (i32)fb_height());
+}
+
 int selftest_run(void) {
     passed = failed = 0;
     kprintf("\n=== nyx self test ===\n");
@@ -172,6 +206,8 @@ int selftest_run(void) {
     kprintf("[interrupts]\n"); test_interrupts();
     kprintf("[disk]\n");       test_disk();
     kprintf("[network]\n");    test_net();
+    kprintf("[video]\n");      test_video();
+    kprintf("[mouse]\n");      test_mouse();
     kprintf("\n%d passed, %d failed\n", passed, failed);
     kprintf(failed ? "SELFTEST_FAIL\n" : "SELFTEST_PASS\n");
     return failed;

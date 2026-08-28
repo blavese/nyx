@@ -16,6 +16,7 @@
 #include "net.h"
 #include "rtl8139.h"
 #include "http.h"
+#include "mouse.h"
 #include "io.h"
 #include "welcome.h"
 #include "serial.h"
@@ -132,6 +133,15 @@ static void execute(char *buf) {
 
     if (!strcmp(c, "help")) cmd_help();
     else if (!strcmp(c, "guide")) guide_print();
+    else if (!strcmp(c, "mouse")) {
+        if (!mouse_present()) { kprintf("no mouse\n"); return; }
+        kprintf("pointer  %d,%d\n", mouse_x(), mouse_y());
+        kprintf("buttons  %s%s%s\n",
+                (mouse_buttons() & 1) ? "left " : "",
+                (mouse_buttons() & 2) ? "right " : "",
+                (mouse_buttons() & 4) ? "middle" : "");
+        kprintf("moves    %d\n", mouse_moves());
+    }
     else if (!strcmp(c, "sync")) {
         kprintf(diskfs_sync() ? "written to disk\n" : "sync: no disk\n");
     } else if (!strcmp(c, "format")) {

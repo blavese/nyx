@@ -2,12 +2,17 @@
    headless test run sees exactly what a user at the console would. */
 #include "printf.h"
 #include "vga.h"
+#include "fb.h"
+#include "fbcon.h"
 #include "serial.h"
 #include "string.h"
 #include "io.h"
 
 void kputc(char c) {
-    vga_putc(c);
+    /* Graphics mode takes over once it is up; before that, and if the
+       card refuses a mode, output stays on the VGA text console. */
+    if (fb_active()) fbcon_putc(c);
+    else             vga_putc(c);
     if (c == '\n') serial_putc('\r');
     serial_putc(c);
 }

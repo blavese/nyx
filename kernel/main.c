@@ -18,6 +18,9 @@
 #include "pci.h"
 #include "rtl8139.h"
 #include "net.h"
+#include "fb.h"
+#include "fbcon.h"
+#include "mouse.h"
 #include "shell.h"
 #include "selftest.h"
 #include "string.h"
@@ -55,6 +58,7 @@ static void init_task(void) {
              "It boots via multiboot, manages its own memory, and\n"
              "preempts its own tasks. Try: ls, cat, ps, mem, help\n", 158);
     fs_write("hello.txt", "hello from a filesystem that lives in RAM\n", 42);
+
     shell_task();
 }
 
@@ -81,6 +85,19 @@ void kmain(u32 magic, u32 mbi_addr) {
     paging_init();   kprintf("  paging  enabled\n");
     heap_init(HEAP_BASE, HEAP_SIZE);
     kprintf("  heap    %d KiB\n", HEAP_SIZE / 1024);
+    /* Needs paging to map the aperture and the heap for the back
+       buffer, so this is the earliest it can come up. Anything
+       printed before now is only in the serial log. */
+    if (fb_init(1024, 768)) {
+        fbcon_init();
+        vga_set_color(VGA_LCYAN, VGA_BLACK);
+        kprintf("  %s %s\n", KERNEL_NAME, KERNEL_VERSION);
+        vga_set_color(VGA_LGREY, VGA_BLACK);
+        kprintf("  video   %dx%d 32bpp, %dx%d text\n",
+                fb_width(), fb_height(), fbcon_cols(), fbcon_rows());
+    } else {
+        kprintf("  video   no vbe, vga text mode\n");
+    }
     fs_init();
     if (ata_init()) {
         kprintf("  disk    %s, %d MiB\n", ata_model(), ata_sectors() / 2048);
@@ -106,6 +123,8 @@ void kmain(u32 magic, u32 mbi_addr) {
         kprintf("  net     no card found\n");
     }
     keyboard_init();
+    if (fb_active() && mouse_init())
+        kprintf("  mouse   ps/2, pointer at %d,%d\n", mouse_x(), mouse_y());
     serial_enable_irq();
     kprintf("  input   ps/2 keyboard + serial (irq driven)\n");
 
