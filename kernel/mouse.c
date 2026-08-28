@@ -51,6 +51,7 @@ static u8   phase;
 static u32  moves;
 
 static bool drawn;
+static bool autodraw = true;   /* off while the window manager owns the pointer */
 static u32  saved[CUR_H][CUR_W];
 static i32  saved_x, saved_y;
 
@@ -82,8 +83,13 @@ void mouse_hide(void) {
     drawn = false;
 }
 
+void mouse_set_autodraw(bool on) {
+    if (!on) mouse_hide();
+    autodraw = on;
+}
+
 void mouse_show(void) {
-    if (drawn || !fb_active() || !present) return;
+    if (!autodraw || drawn || !fb_active() || !present) return;
     saved_x = mx; saved_y = my;
     for (u32 y = 0; y < CUR_H; y++) {
         for (u32 x = 0; x < CUR_W; x++) {

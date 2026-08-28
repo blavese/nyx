@@ -1,13 +1,13 @@
 # nyx
 
 A small operating system written from scratch for 32-bit x86. It boots from a
-multiboot loader, draws to a framebuffer, manages its own memory, preempts its
-own tasks, keeps files on a FAT16 disk, talks to the internet, and runs real
-programs in ring 3.
+multiboot loader, drives a framebuffer, manages its own memory, preempts its
+own tasks, keeps files on a FAT16 disk, talks to the internet, runs real
+programs in ring 3, and has a desktop with draggable windows.
 
-![nyx booting](docs/boot.png)
+![the nyx desktop](docs/desktop.png)
 
-It is not a clone of anything. About 5,000 lines of C and assembly, no libc,
+It is not a clone of anything. About 6,500 lines of C and assembly, no libc,
 no third-party code, no runtime dependencies.
 
 ## running it on Windows
@@ -26,6 +26,12 @@ Windows: the kernel only ever sees the pretend machine QEMU gives it. Your
 files live in a disk image under `%LocalAppData%\nyx`.
 
 Something to try once it boots:
+
+    desktop
+
+That opens a window manager with a paint program. Drag a title bar to move a
+window, click one to bring it forward, pick a colour and draw. Escape returns
+to the shell.
 
     exec hello.elf
     bg count.elf
@@ -121,6 +127,15 @@ and refuses anything that would land in kernel memory. `userland/` holds
 programs built entirely separately: the only thing they share with the kernel
 is the syscall numbers.
 
+**Windows.** A compositing window manager: windows are off-screen surfaces,
+the manager owns the chrome, the stacking order and the pointer, and the whole
+screen is assembled into the back buffer and pushed once per frame so a window
+moving over another leaves no trail. Title bars drag, clicking raises, the
+close box closes, and a taskbar shows what is open. `paint` has sixteen
+colours, four brush sizes and fill; strokes are interpolated with Bresenham,
+because the mouse reports in jumps and without it a quick stroke is a row of
+dots.
+
 **Drivers.** Framebuffer and VGA text consoles, PS/2 keyboard with
 shift/caps/ctrl, PS/2 mouse with a drawn pointer, PIT at 100 Hz, and a 16550
 serial port driven by IRQ4.
@@ -131,18 +146,19 @@ character first, so a person can type at it and a script can pipe into it.
 ## testing
 
 The kernel tests itself. `./run.sh -T` boots with selftest on the command line,
-runs 71 checks across every subsystem, then writes to QEMU's debug-exit port so
+runs 86 checks across every subsystem, then writes to QEMU's debug-exit port so
 the host gets a real exit status.
 
-    [string]           8 checks      [disk]         6 checks
-    [physical memory]  4 checks      [fat]          9 checks
-    [paging]           4 checks      [network]      7 checks
-    [heap]             5 checks      [elf]          7 checks
-    [filesystem]       6 checks      [userspace]    3 checks
-    [timer]            2 checks      [video]        7 checks
-    [interrupts]       2 checks      [mouse]        1 check
+    [string]           8 checks      [network]     7 checks
+    [physical memory]  4 checks      [elf]         7 checks
+    [paging]           4 checks      [userspace]   3 checks
+    [heap]             5 checks      [video]       7 checks
+    [filesystem]       6 checks      [mouse]       1 check
+    [timer]            2 checks      [graphics]   12 checks
+    [interrupts]       2 checks      [windows]     3 checks
+    [disk]             6 checks      [fat]         9 checks
 
-    71 passed, 0 failed
+    86 passed, 0 failed
     SELFTEST_PASS
 
 The tests are written to fail for the right reasons. The disk test writes a
@@ -202,8 +218,10 @@ large range:
 - **Flat filesystem**, no directories, and only 8.3 names.
 - **No shared libraries**, no dynamic linking, no relocation: programs are
   static and loaded at a fixed address.
-- **No window system.** There is a framebuffer, a font and a mouse pointer,
-  but nothing draws windows yet.
+- **Graphical programs live in the kernel.** Text programs run in ring 3, but
+  the window manager has no way yet to hand a surface across the privilege
+  boundary, so `paint` is kernel code. That gap is the next real piece of work.
+- **No window resizing**, and eight windows at once.
 - **TCP has no retransmission** and handles one connection at a time. It is
   correct over a link that does not drop packets, which is what an emulated
   network is, and would need real work before it faced the open internet
@@ -248,6 +266,9 @@ orders of magnitude away from Linux, which is roughly 30 million lines.
     kernel/elf.c       elf32 loader
     kernel/syscall.c   the system call table
     kernel/user.c      building and launching ring 3 processes
+    kernel/wm.c        the window manager
+    kernel/apps.c      paint and the about window
+    kernel/gfx.c       drawing into off-screen surfaces
     kernel/vga.c       text console
     kernel/serial.c    16550 uart, interrupt driven
     kernel/keyboard.c  ps/2 keyboard

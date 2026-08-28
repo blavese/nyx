@@ -77,6 +77,12 @@ void pmm_init(multiboot_info_t *mbi) {
     for (u32 a = kstart; a < kend; a += PAGE_SIZE) mark_used(FRAME_IDX(a));
 }
 
+void pmm_reserve(u32 start, u32 size) {
+    u32 first = start & ~(PAGE_SIZE - 1);
+    u32 last  = (start + size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    for (u32 a = first; a < last; a += PAGE_SIZE) mark_used(FRAME_IDX(a));
+}
+
 u32 pmm_alloc_frame(void) {
     for (u32 i = 0; i < total_frames; i++) {
         if (!is_used(i)) { mark_used(i); return IDX_ADDR(i); }

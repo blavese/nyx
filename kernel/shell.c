@@ -19,6 +19,9 @@
 #include "http.h"
 #include "mouse.h"
 #include "user.h"
+#include "wm.h"
+#include "apps.h"
+#include "fb.h"
 #include "elf.h"
 #include "io.h"
 #include "welcome.h"
@@ -43,6 +46,7 @@ static u32 split(char *s, char **argv, u32 max) {
 static void cmd_help(void) {
     kprintf("commands:\n"
             "  guide           a short tour, start here\n"
+            "  desktop         windows, a mouse and a paint program\n"
             "  help            this text\n"
             "  ls              list files\n"
             "  cat NAME        print a file\n"
@@ -139,6 +143,15 @@ static void execute(char *buf) {
 
     if (!strcmp(c, "help")) cmd_help();
     else if (!strcmp(c, "guide")) guide_print();
+    else if (!strcmp(c, "desktop")) {
+        if (!fb_active()) { kprintf("the desktop needs a framebuffer" "\n"); return; }
+        app_paint();
+        app_about();
+        wm_run();
+        /* the desktop owned the screen; give the console its own back */
+        vga_clear();
+        kprintf("back at the shell" "\n");
+    }
     else if (!strcmp(c, "bg")) {
         if (argc < 2) { kprintf("usage: bg PROGRAM" "\n"); return; }
         file_t *f = fs_find(argv[1]);

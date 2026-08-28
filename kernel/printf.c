@@ -1,5 +1,9 @@
-/* Everything printed goes to the screen and out the serial port, so a
-   headless test run sees exactly what a user at the console would. */
+/* Formatted output.
+ *
+ * One formatter drives two sinks: the console (screen plus serial, so a
+ * headless run sees exactly what a person at the machine would) and a caller
+ * supplied buffer, which the graphical programs need because they draw
+ * strings rather than print them. */
 #include "printf.h"
 #include "vga.h"
 #include "fb.h"
@@ -13,69 +17,109 @@ void kputc(char c) {
        card refuses a mode, output stays on the VGA text console. */
     if (fb_active()) fbcon_putc(c);
     else             vga_putc(c);
+
     if (c == '\n') serial_putc('\r');
     serial_putc(c);
 }
+
 void kputs(const char *s) { while (*s) kputc(*s++); }
 
-static void put_uint(u32 v, u32 base, int upper, int width, char pad) {
+/* Where a formatted run is going. A null buffer means the console. */
+typedef struct {
+    char  *buf;
+    size_t cap;
+    size_t len;
+} sink_t;
+
+static void emit(sink_t *s, char c) {
+    if (!s->buf) { kputc(c); return; }
+    if (s->len + 1 < s->cap) s->buf[s->len] = c;
+    s->len++;
+}
+
+static void emit_str(sink_t *s, const char *p) { while (*p) emit(s, *p++); }
+
+static void put_uint(sink_t *s, u32 v, u32 base, int upper, int width, char pad) {
     const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
     char buf[36];
     int n = 0;
     if (v == 0) buf[n++] = '0';
     while (v) { buf[n++] = digits[v % base]; v /= base; }
-    for (int i = n; i < width; i++) kputc(pad);
-    while (n--) kputc(buf[n]);
+    for (int i = n; i < width; i++) emit(s, pad);
+    while (n--) emit(s, buf[n]);
 }
 
-static void put_str(const char *s, int width, bool left) {
-    int n = 0;
-    for (const char *p = s; *p; p++) n++;
-    if (!left) for (int i = n; i < width; i++) kputc(' ');
-    while (*s) kputc(*s++);
-    if (left) for (int i = n; i < width; i++) kputc(' ');
+static void put_int(sink_t *s, i32 v, int width, char pad) {
+    if (v < 0) {
+        emit(s, '-');
+        put_uint(s, (u32)(-v), 10, 0, width ? width - 1 : 0, pad);
+    } else {
+        put_uint(s, (u32)v, 10, 0, width, pad);
+    }
 }
 
-static void put_int(i32 v, int width, char pad) {
-    if (v < 0) { kputc('-'); put_uint((u32)(-v), 10, 0, width ? width - 1 : 0, pad); }
-    else put_uint((u32)v, 10, 0, width, pad);
-}
-
-void kvprintf(const char *fmt, va_list ap) {
+static void format(sink_t *s, const char *fmt, va_list ap) {
     for (; *fmt; fmt++) {
-        if (*fmt != '%') { kputc(*fmt); continue; }
+        if (*fmt != '%') { emit(s, *fmt); continue; }
         fmt++;
         char pad = ' ';
         int width = 0;
-        bool left = false;
-        if (*fmt == '-') { left = true; fmt++; }
         if (*fmt == '0') { pad = '0'; fmt++; }
         while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
 
         switch (*fmt) {
-            case 'd': case 'i': put_int(va_arg(ap, i32), width, pad); break;
-            case 'u': put_uint(va_arg(ap, u32), 10, 0, width, pad); break;
-            case 'x': put_uint(va_arg(ap, u32), 16, 0, width, pad); break;
-            case 'X': put_uint(va_arg(ap, u32), 16, 1, width, pad); break;
-            case 'b': put_uint(va_arg(ap, u32), 2, 0, width, pad); break;
-            case 'p': kputs("0x"); put_uint((u32)(uintptr_t)va_arg(ap, void *), 16, 0, 8, '0'); break;
-            case 'c': kputc((char)va_arg(ap, int)); break;
-            case 's': { const char *s = va_arg(ap, const char *); put_str(s ? s : "(null)", width, left); break; }
-            case '%': kputc('%'); break;
-            default: kputc('%'); kputc(*fmt); break;
+            case 'd': case 'i': put_int(s, va_arg(ap, i32), width, pad); break;
+            case 'u': put_uint(s, va_arg(ap, u32), 10, 0, width, pad); break;
+            case 'x': put_uint(s, va_arg(ap, u32), 16, 0, width, pad); break;
+            case 'X': put_uint(s, va_arg(ap, u32), 16, 1, width, pad); break;
+            case 'b': put_uint(s, va_arg(ap, u32), 2, 0, width, pad); break;
+            case 'p':
+                emit_str(s, "0x");
+                put_uint(s, (u32)(uintptr_t)va_arg(ap, void *), 16, 0, 8, '0');
+                break;
+            case 'c': emit(s, (char)va_arg(ap, int)); break;
+            case 's': {
+                const char *str = va_arg(ap, const char *);
+                emit_str(s, str ? str : "(null)");
+                break;
+            }
+            case '%': emit(s, '%'); break;
+            default: emit(s, '%'); emit(s, *fmt); break;
         }
     }
 }
 
+void kvprintf(const char *fmt, va_list ap) {
+    sink_t s = { 0, 0, 0 };
+    format(&s, fmt, ap);
+}
+
 void kprintf(const char *fmt, ...) {
-    va_list ap; va_start(ap, fmt); kvprintf(fmt, ap); va_end(ap);
+    va_list ap;
+    va_start(ap, fmt);
+    kvprintf(fmt, ap);
+    va_end(ap);
+}
+
+int kformat(char *buf, size_t cap, const char *fmt, ...) {
+    if (!buf || cap == 0) return 0;
+    sink_t s = { buf, cap, 0 };
+    va_list ap;
+    va_start(ap, fmt);
+    format(&s, fmt, ap);
+    va_end(ap);
+    buf[s.len < cap ? s.len : cap - 1] = 0;
+    return (int)s.len;
 }
 
 void panic(const char *fmt, ...) {
     cli();
     vga_set_color(VGA_WHITE, VGA_RED);
     kprintf("\n*** KERNEL PANIC ***\n");
-    va_list ap; va_start(ap, fmt); kvprintf(fmt, ap); va_end(ap);
+    va_list ap;
+    va_start(ap, fmt);
+    kvprintf(fmt, ap);
+    va_end(ap);
     kprintf("\nSystem halted.\n");
     for (;;) hlt();
 }

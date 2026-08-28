@@ -21,7 +21,7 @@
                        Foreground="{StaticResource Accent}"/>
             <TextBlock Margin="0,6,0,0" FontSize="14" Foreground="{StaticResource Dim}"
                        TextWrapping="Wrap"
-                       Text="A small operating system, written from scratch. It has graphics, a mouse, a disk, a network connection, and runs real programs. It boots in a safe pretend computer, so nothing touches Windows."/>
+                       Text="A small operating system, written from scratch. It has a desktop with draggable windows and a paint program, its own disk, a network connection, and runs real programs. It boots in a safe pretend computer, so nothing touches Windows."/>
         </StackPanel>
 
         <!-- status -->
@@ -65,23 +65,23 @@
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="guide" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
-                        <TextBlock Grid.Row="0" Grid.Column="1" Text="a short tour, start here" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="desktop" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="0" Grid.Column="1" Text="windows, a mouse and a paint program" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
 
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="exec hello.elf" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
-                        <TextBlock Grid.Row="1" Grid.Column="1" Text="run a real program in ring 3" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="guide" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="1" Grid.Column="1" Text="a short tour of everything else" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
 
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="bg count.elf" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
-                        <TextBlock Grid.Row="2" Grid.Column="1" Text="run one in the background, then: ps" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="exec hello.elf" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="2" Grid.Column="1" Text="run a real program in ring 3" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
 
-                        <TextBlock Grid.Row="3" Grid.Column="0" Text="dhcp" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
-                        <TextBlock Grid.Row="3" Grid.Column="1" Text="get an address from the network" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="bg count.elf" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="3" Grid.Column="1" Text="run one in the background, then: ps" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
 
-                        <TextBlock Grid.Row="4" Grid.Column="0" Text="fetch example.com / p.html" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
-                        <TextBlock Grid.Row="4" Grid.Column="1" Text="download a real web page" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="dhcp" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="4" Grid.Column="1" Text="get an address from the network" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
 
-                        <TextBlock Grid.Row="5" Grid.Column="0" Text="ls" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
-                        <TextBlock Grid.Row="5" Grid.Column="1" Text="your files, kept on a FAT16 disk" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="5" Grid.Column="0" Text="fetch example.com / p.html" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="5" Grid.Column="1" Text="download a real web page" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
 
                         <TextBlock Grid.Row="6" Grid.Column="0" Text="help" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}"/>
                         <TextBlock Grid.Row="6" Grid.Column="1" Text="every command" FontSize="13" Foreground="{StaticResource Dim}"/>

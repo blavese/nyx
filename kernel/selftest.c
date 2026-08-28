@@ -24,6 +24,8 @@
 #include "fb.h"
 #include "fbcon.h"
 #include "mouse.h"
+#include "gfx.h"
+#include "wm.h"
 #include "font.h"
 
 static int passed, failed;
@@ -304,6 +306,70 @@ static void test_userspace(void) {
     ok("ring 3 code issued system calls", syscall_count() >= before + 7);
 }
 
+
+static void test_gfx(void) {
+    const int W = 32, H = 24;
+    u32 *px = (u32 *)kmalloc((u32)(W * H) * 4);
+    if (!px) { ok("scratch surface", false); return; }
+
+    surf_clear(px, W, H, 0x111111);
+    ok("clear fills every pixel", px[0] == 0x111111 && px[W * H - 1] == 0x111111);
+
+    surf_rect(px, W, H, 4, 4, 8, 8, 0x222222);
+    ok("rect fills its interior", px[6 * W + 6] == 0x222222);
+    ok("rect leaves the outside alone", px[2 * W + 2] == 0x111111);
+
+    /* A rectangle hanging off the edge must clip rather than write past the
+       end of the surface. */
+    surf_rect(px, W, H, -4, -4, 8, 8, 0x333333);
+    ok("rect clips at the top left", px[0] == 0x333333 && px[3 * W + 3] == 0x333333);
+    surf_rect(px, W, H, W - 4, H - 4, 8, 8, 0x444444);
+    ok("rect clips at the bottom right", px[(H - 1) * W + (W - 1)] == 0x444444);
+
+    surf_clear(px, W, H, 0);
+    surf_line(px, W, H, 2, 2, 20, 12, 1, 0x555555);
+    ok("line marks its start", px[2 * W + 2] == 0x555555);
+    ok("line marks its end", px[12 * W + 20] == 0x555555);
+
+    surf_clear(px, W, H, 0);
+    surf_disc(px, W, H, 16, 12, 4, 0x666666);
+    ok("disc fills its centre", px[12 * W + 16] == 0x666666);
+    ok("disc stays inside its radius", px[12 * W + 25] == 0);
+
+    surf_clear(px, W, H, 0);
+    surf_text(px, W, H, 1, 1, "A", 0x777777);
+    bool inked = false;
+    for (int i = 0; i < W * H; i++) if (px[i] == 0x777777) inked = true;
+    ok("text puts ink on the surface", inked);
+
+    char buf[32];
+    kformat(buf, sizeof(buf), "%d/%s/%x", 42, "ok", 255);
+    ok("kformat formats", strcmp(buf, "42/ok/ff") == 0);
+    kformat(buf, 6, "abcdefghij");
+    ok("kformat respects the buffer size", strlen(buf) == 5);
+
+    kfree(px);
+}
+
+static void test_wm(void) {
+    if (!fb_active()) { kprintf("  SKIP  no framebuffer\n"); return; }
+
+    window_t *a = wm_create("a", 10, 10, 120, 80);
+    window_t *b = wm_create("b", 40, 40, 120, 80);
+    ok("windows can be created", a && b);
+    if (!a || !b) return;
+
+    ok("outer size allows for the chrome",
+       wm_outer_w(a) == 120 + WM_BORDER * 2 &&
+       wm_outer_h(a) == 80 + WM_TITLE_H + WM_BORDER);
+
+    /* Closing must also drop the manager's reference, or the next composite
+       walks freed memory. */
+    wm_close(a);
+    wm_close(b);
+    ok("windows can be closed", true);
+}
+
 int selftest_run(void) {
     passed = failed = 0;
     kprintf("\n=== nyx self test ===\n");
@@ -321,6 +387,8 @@ int selftest_run(void) {
     kprintf("[userspace]\n");  test_userspace();
     kprintf("[video]\n");      test_video();
     kprintf("[mouse]\n");      test_mouse();
+    kprintf("[graphics]\n");   test_gfx();
+    kprintf("[windows]\n");    test_wm();
     kprintf("\n%d passed, %d failed\n", passed, failed);
     kprintf(failed ? "SELFTEST_FAIL\n" : "SELFTEST_PASS\n");
     return failed;

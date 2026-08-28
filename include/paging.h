@@ -5,7 +5,7 @@
 #define PTE_RW      0x2
 #define PTE_USER    0x4
 
-#define KERNEL_SPACE_MB 16u        /* identity mapped, shared by every space */
+#define KERNEL_SPACE_MB 32u        /* identity mapped, shared by every space */
 
 void paging_init(void);
 

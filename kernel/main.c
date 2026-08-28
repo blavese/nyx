@@ -28,7 +28,7 @@
 #include "io.h"
 
 #define HEAP_BASE (8u * 1024 * 1024)
-#define HEAP_SIZE (4u * 1024 * 1024)
+#define HEAP_SIZE (16u * 1024 * 1024)
 
 static bool want_selftest = false;
 
@@ -83,6 +83,10 @@ void kmain(u32 magic, u32 mbi_addr) {
     idt_init();      kprintf("  idt     256 vectors\n");
     pic_init();      kprintf("  pic     irqs remapped to 32..47\n");
     pmm_init(mbi);   kprintf("  memory  %d KiB usable\n", pmm_free_frames() * 4);
+    /* The heap lives in identity mapped memory, so the frame allocator
+       has to be told about it or it will hand the same pages out twice. */
+    pmm_reserve(HEAP_BASE, HEAP_SIZE);
+
     paging_init();   kprintf("  paging  enabled\n");
     heap_init(HEAP_BASE, HEAP_SIZE);
     kprintf("  heap    %d KiB\n", HEAP_SIZE / 1024);

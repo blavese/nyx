@@ -24,7 +24,16 @@ void guide_print(void) {
     kprintf("  ------------\n\n");
 
     vga_set_color(VGA_LCYAN, VGA_BLACK);
-    kprintf("  1. Files that stay put\n");
+    kprintf("  1. The desktop\n");
+    vga_set_color(VGA_LGREY, VGA_BLACK);
+    kprintf("     desktop                  windows, a mouse, a paint program\n");
+    kprintf("     Drag a title bar to move a window, click one to\n");
+    kprintf("     bring it forward, and the red box closes it.\n");
+    kprintf("     Pick a colour and drag on the white area to draw.\n");
+    kprintf("     Escape returns you here.\n\n");
+
+    vga_set_color(VGA_LCYAN, VGA_BLACK);
+    kprintf("  2. Files that stay put\n");
     vga_set_color(VGA_LGREY, VGA_BLACK);
     kprintf("     ls                       see what is stored\n");
     kprintf("     cat readme.txt           read a file\n");
@@ -34,7 +43,7 @@ void guide_print(void) {
     kprintf("     start it again, and they will still be here.\n\n");
 
     vga_set_color(VGA_LCYAN, VGA_BLACK);
-    kprintf("  2. The internet\n");
+    kprintf("  3. The internet\n");
     vga_set_color(VGA_LGREY, VGA_BLACK);
     kprintf("     dhcp                     ask the network for an address\n");
     kprintf("     net                      show what it got\n");
@@ -45,7 +54,7 @@ void guide_print(void) {
     kprintf("     Then: cat page.html\n\n");
 
     vga_set_color(VGA_LCYAN, VGA_BLACK);
-    kprintf("  3. Running real programs\n");
+    kprintf("  4. Running real programs\n");
     vga_set_color(VGA_LGREY, VGA_BLACK);
     kprintf("     exec hello.elf           run a program and wait\n");
     kprintf("     bg count.elf             run one in the background\n");
@@ -55,7 +64,7 @@ void guide_print(void) {
     kprintf("     where they cannot touch the kernel, and ask for\n");
     kprintf("     everything through system calls.\n\n");
     vga_set_color(VGA_LCYAN, VGA_BLACK);
-    kprintf("  4. The machine itself\n");
+    kprintf("  5. The machine itself\n");
     vga_set_color(VGA_LGREY, VGA_BLACK);
     kprintf("     mem                      memory found and used\n");
     kprintf("     uptime                   how long since boot\n");
