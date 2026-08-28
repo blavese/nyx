@@ -2,3 +2,6 @@ build/
 *.o
 *.elf
 *.ppm
+launcher/bin/
+launcher/obj/
+launcher/publish/

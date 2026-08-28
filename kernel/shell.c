@@ -12,6 +12,7 @@
 #include "sched.h"
 #include "fs.h"
 #include "io.h"
+#include "welcome.h"
 #include "serial.h"
 
 #define LINE_MAX 256
@@ -32,6 +33,7 @@ static u32 split(char *s, char **argv, u32 max) {
 
 static void cmd_help(void) {
     kprintf("commands:\n"
+            "  guide           a short tour, start here\n"
             "  help            this text\n"
             "  ls              list files\n"
             "  cat NAME        print a file\n"
@@ -116,6 +118,7 @@ static void execute(char *buf) {
     const char *c = argv[0];
 
     if (!strcmp(c, "help")) cmd_help();
+    else if (!strcmp(c, "guide")) guide_print();
     else if (!strcmp(c, "ls")) cmd_ls();
     else if (!strcmp(c, "cat")) {
         if (argc < 2) kprintf("usage: cat NAME\n"); else cmd_cat(argv[1]);
@@ -159,7 +162,7 @@ static void execute(char *buf) {
 }
 
 void shell_task(void) {
-    kprintf("\ntype help for commands\n");
+    welcome_print();
     u32 len = 0;
     kprintf("nyx> ");
     for (;;) {

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>NyxLauncher</RootNamespace>
+    <AssemblyName>nyx</AssemblyName>
+    <Platforms>x64</Platforms>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- the kernel travels inside the launcher, so the release is one file -->
+    <EmbeddedResource Include="..\build\nyx.elf" Link="nyx.elf" />
+  </ItemGroup>
+
+</Project>

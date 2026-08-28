@@ -9,7 +9,21 @@ virtual memory, preempts its own tasks, and drops you at a shell.
 It is not a clone of anything. About 2,300 lines of C and assembly, no libc,
 no third-party code, no runtime dependencies.
 
-## running it
+## running it on Windows
+
+Download **nyx.exe** from the
+[latest release](https://github.com/blavese/nyx/releases/latest) and run it.
+The kernel is inside that file; nothing needs to be built.
+
+The launcher checks for QEMU, the emulator nyx boots on, and offers to install
+it from Microsoft's package manager if it is missing. Then press Start and a
+black window opens with the operating system running in it. Type `guide` when
+you get there.
+
+It runs as a normal user, needs no administrator rights, and cannot affect
+Windows: the kernel only ever sees the pretend machine QEMU gives it.
+
+## running it from source
 
 You need QEMU and Zig. Zig is used only as a cross compiler, so there is no
 i686-elf toolchain to build first.
@@ -18,7 +32,11 @@ i686-elf toolchain to build first.
     ./run.sh -t       boot headless, console on stdout
     ./run.sh -T       run the built-in self test, exit code is the result
 
-Try: help, ls, cat readme.txt, ps, mem, spawn, uptime.
+Try: guide, help, ls, cat readme.txt, ps, mem, spawn, uptime.
+
+The Windows launcher lives in `launcher/` and is built with
+`dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true`.
+It embeds `build/nyx.elf`, so build the kernel first.
 
 ## what it actually does
 
@@ -149,8 +167,10 @@ orders of magnitude away from Linux, which is roughly 30 million lines.
     kernel/fs.c        in-memory filesystem
     kernel/shell.c     the shell
     kernel/selftest.c  the boot-time test suite
+    kernel/welcome.c   the first-run text and the guided tour
     kernel/divide.c    64-bit division helpers libgcc would normally provide
     tools/             build checks and the shell test harness
+    launcher/          the Windows launcher (C#/WPF)
 
 ## license
 
