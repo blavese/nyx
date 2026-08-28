@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Compression;
 using System.IO;
 using System.Reflection;
 using Microsoft.Win32;
@@ -86,13 +87,34 @@ public static class Emulator
 
     private const long DiskBytes = 32L * 1024 * 1024;
 
-    /// <summary>Creates the disk image on first run. Existing images are left alone.</summary>
+    /// <summary>
+    /// Creates the disk on first run from an image that is already formatted
+    /// and carries the sample programs. An existing disk is never touched, so
+    /// nothing the user saved is lost on an upgrade.
+    /// </summary>
     public static void EnsureDisk()
     {
         var path = DiskPath;
         if (File.Exists(path) && new FileInfo(path).Length >= DiskBytes) return;
-        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write);
-        fs.SetLength(DiskBytes);
+
+        var asm = Assembly.GetExecutingAssembly();
+        var name = asm.GetManifestResourceNames()
+                      .FirstOrDefault(n => n.EndsWith("starter.img.gz", StringComparison.OrdinalIgnoreCase));
+
+        if (name is not null)
+        {
+            using var src = asm.GetManifestResourceStream(name)!;
+            using var gz = new GZipStream(src, CompressionMode.Decompress);
+            using var outFile = File.Create(path);
+            gz.CopyTo(outFile);
+            if (outFile.Length >= DiskBytes) return;
+            outFile.SetLength(DiskBytes);
+            return;
+        }
+
+        // no starter available: a blank disk, which the kernel formats itself
+        using var blank = new FileStream(path, FileMode.Create, FileAccess.Write);
+        blank.SetLength(DiskBytes);
     }
 
     /// <summary>Boots the kernel in its own window, with a disk and a network card.</summary>

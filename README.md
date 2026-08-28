@@ -1,12 +1,13 @@
 # nyx
 
 A small operating system written from scratch for 32-bit x86. It boots from a
-multiboot loader, manages its own memory, preempts its own tasks, keeps files
-on a real disk, and talks to the internet.
+multiboot loader, draws to a framebuffer, manages its own memory, preempts its
+own tasks, keeps files on a FAT16 disk, talks to the internet, and runs real
+programs in ring 3.
 
 ![nyx booting](docs/boot.png)
 
-It is not a clone of anything. About 4,000 lines of C and assembly, no libc,
+It is not a clone of anything. About 5,000 lines of C and assembly, no libc,
 no third-party code, no runtime dependencies.
 
 ## running it on Windows
@@ -25,6 +26,13 @@ Windows: the kernel only ever sees the pretend machine QEMU gives it. Your
 files live in a disk image under `%LocalAppData%\nyx`.
 
 Something to try once it boots:
+
+    exec hello.elf
+    bg count.elf
+    ps
+
+Those are separate executables, compiled on their own and loaded from the disk.
+They run in ring 3 and reach the kernel only through system calls.
 
     dhcp
     fetch example.com / page.html
@@ -46,15 +54,16 @@ i686-elf toolchain to build first.
 
 The Windows launcher lives in `launcher/` and is built with
 `dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true`.
-It embeds `build/nyx.elf`, so build the kernel first.
+It embeds `build/nyx.elf` and a starter disk, so build the kernel and run
+`userland/build.sh` first.
 
 ## what it actually does
 
 **Boot.** A multiboot header gets it loaded at 1 MiB in 32-bit protected mode.
 The bootloader's memory map is read to find out how much RAM exists.
 
-**Descriptor tables.** A flat GDT (kernel and user code/data) plus a TSS so a
-future ring 3 can find its way back to a kernel stack. A 256-entry IDT with
+**Descriptor tables.** A flat GDT (kernel and user code/data) plus a TSS, which
+is how an interrupt taken in ring 3 finds a kernel stack to switch to. A 256-entry IDT with
 stubs for all 32 CPU exceptions and 16 hardware IRQs, generated rather than
 hand-written.
 
@@ -84,11 +93,12 @@ its size, then LBA28 reads and writes with a cache flush. PIO moves every word
 through the CPU, which is slow and needs no bus mastering setup, which is the
 right trade at this size.
 
-**Filesystem.** Files are held in memory and the whole filesystem is written
-out to the disk as one image whenever it changes, then read back at boot. A
-blank disk is prepared automatically on first boot. That trades write
-throughput, which nothing here needs, for a format simple enough to be
-obviously correct.
+**Filesystem.** FAT16, so the disk is not a sealed box: other tools can open
+the image and files move in both directions. Files are worked on in memory and
+written through on every change. A blank disk is formatted automatically on
+first boot. `tools/readfat.py` parses the image straight from the
+specification, sharing no code with the kernel, and can copy a file in from the
+host.
 
 **Network.** PCI enumeration to find the card, then a Realtek RTL8139 driver
 with an interrupt-driven receive ring and four transmit descriptors. On top of
@@ -97,8 +107,23 @@ and sends them), UDP, a DHCP client, a DNS resolver, and a single-connection
 TCP client with a proper three way handshake and orderly close. `fetch` uses
 all of it to do an HTTP GET.
 
-**Drivers.** VGA text console with scrolling and colour, PS/2 keyboard with
-shift/caps/ctrl, PIT at 100 Hz, and a 16550 serial port driven by IRQ4.
+**Graphics.** Mode setting through the Bochs VBE dispatch ports rather than a
+BIOS call, so it works from protected mode with no real mode trampoline and no
+help from the bootloader. The aperture is found through the VGA device's PCI
+BAR and mapped explicitly. Drawing goes to a back buffer and is pushed to the
+card in one go, because compositing directly in video memory over PCI is
+visibly slow. The console is redrawn on top of that with a bitmap font, so
+everything that already printed kept working.
+
+**Programs.** Ring 3, its own address space per process, and seven system calls
+through int 0x80. An ELF32 loader maps each PT_LOAD segment where the file asks
+and refuses anything that would land in kernel memory. `userland/` holds
+programs built entirely separately: the only thing they share with the kernel
+is the syscall numbers.
+
+**Drivers.** Framebuffer and VGA text consoles, PS/2 keyboard with
+shift/caps/ctrl, PS/2 mouse with a drawn pointer, PIT at 100 Hz, and a 16550
+serial port driven by IRQ4.
 
 **Shell.** Reads from the keyboard or the serial line, whichever produces a
 character first, so a person can type at it and a script can pipe into it.
@@ -106,26 +131,29 @@ character first, so a person can type at it and a script can pipe into it.
 ## testing
 
 The kernel tests itself. `./run.sh -T` boots with selftest on the command line,
-runs 44 checks across every subsystem, then writes to QEMU's debug-exit port so
+runs 71 checks across every subsystem, then writes to QEMU's debug-exit port so
 the host gets a real exit status.
 
-    [string]           8 checks
-    [physical memory]  4 checks
-    [paging]           4 checks
-    [heap]             5 checks
-    [filesystem]       6 checks
-    [timer]            2 checks
-    [interrupts]       2 checks
-    [disk]             6 checks
-    [network]          7 checks
+    [string]           8 checks      [disk]         6 checks
+    [physical memory]  4 checks      [fat]          9 checks
+    [paging]           4 checks      [network]      7 checks
+    [heap]             5 checks      [elf]          7 checks
+    [filesystem]       6 checks      [userspace]    3 checks
+    [timer]            2 checks      [video]        7 checks
+    [interrupts]       2 checks      [mouse]        1 check
 
-    44 passed, 0 failed
+    71 passed, 0 failed
     SELFTEST_PASS
 
-The disk test writes a pattern to a spare sector, reads it back, compares it,
-and puts the original contents back. The network test runs a real DHCP
-handshake, pings the gateway, and resolves a real hostname, so it only passes
-if the whole stack works.
+The tests are written to fail for the right reasons. The disk test writes a
+pattern to a spare sector, reads it back, and restores the original. The FAT
+test writes a file spanning several clusters, so it exercises chain following
+rather than a single sector. The network test performs a real DHCP handshake,
+pings the gateway and resolves a live hostname. The ELF test feeds the loader
+six malformed images, including one asking to be mapped over the kernel, and
+requires each to be refused. The userspace test watches the system call counter
+rather than the task list, because a program can finish before a count is
+taken.
 
 `tools/shell_test.sh` is the other half. It boots the OS, types commands at the
 shell over the serial line, and checks what comes back.
@@ -168,11 +196,14 @@ the guest keeps up with exactly (irqs=104 got=104 read=104 dropped=0).
 Being explicit about the boundary, because "operating system" covers a very
 large range:
 
-- **No userspace.** Everything runs in ring 0. The GDT has ring 3 descriptors
-  and the IDT has a syscall gate at 0x80 ready, but nothing crosses yet.
-- **No ELF loader**, so there are no separate programs, only kernel tasks.
-- **Flat filesystem**, no directories, and the whole thing is rewritten on
-  every change rather than updated in place.
+- **No fork or exec in the Unix sense.** A program is loaded and run; it
+  cannot start another or replace itself.
+- **Seven system calls.** Enough to print, read a file, sleep and exit.
+- **Flat filesystem**, no directories, and only 8.3 names.
+- **No shared libraries**, no dynamic linking, no relocation: programs are
+  static and loaded at a fixed address.
+- **No window system.** There is a framebuffer, a font and a mouse pointer,
+  but nothing draws windows yet.
 - **TCP has no retransmission** and handles one connection at a time. It is
   correct over a link that does not drop packets, which is what an emulated
   network is, and would need real work before it faced the open internet
@@ -209,6 +240,14 @@ orders of magnitude away from Linux, which is roughly 30 million lines.
     kernel/net.c       ethernet, arp, ip, icmp, udp, dhcp, dns
     kernel/tcp.c       tcp client
     kernel/http.c      http get
+    kernel/fb.c        linear framebuffer via the bochs vbe ports
+    kernel/fbcon.c     the text console drawn into it
+    kernel/font.c      8x16 bitmap font (generated)
+    kernel/mouse.c     ps/2 mouse and the drawn pointer
+    kernel/fat.c       fat16
+    kernel/elf.c       elf32 loader
+    kernel/syscall.c   the system call table
+    kernel/user.c      building and launching ring 3 processes
     kernel/vga.c       text console
     kernel/serial.c    16550 uart, interrupt driven
     kernel/keyboard.c  ps/2 keyboard
@@ -217,7 +256,8 @@ orders of magnitude away from Linux, which is roughly 30 million lines.
     kernel/welcome.c   the first-run text and the guided tour
     kernel/selftest.c  the boot-time test suite
     kernel/divide.c    64-bit division helpers libgcc would normally provide
-    tools/             build checks and the shell test harness
+    userland/          programs, built separately from the kernel
+    tools/             build checks, the font generator, the FAT reader
     launcher/          the Windows launcher (C#/WPF)
 
 ## license

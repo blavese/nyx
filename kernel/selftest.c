@@ -9,10 +9,16 @@
 #include "fs.h"
 #include "timer.h"
 #include "sched.h"
+#include "syscall.h"
 #include "idt.h"
 #include "ata.h"
 #include "diskfs.h"
 #include "fat.h"
+#include "elf.h"
+#include "user.h"
+#include "paging.h"
+#include "sched.h"
+#include "syscall.h"
 #include "net.h"
 #include "rtl8139.h"
 #include "fb.h"
@@ -223,6 +229,81 @@ static void test_fat(void) {
     kfree(in);
 }
 
+
+/* Builds a minimal but structurally valid ELF32 header in a caller supplied
+   buffer, so individual fields can then be corrupted one at a time. */
+static void make_elf(u8 *buf, u32 vaddr) {
+    memset(buf, 0, 128);
+    buf[0] = 0x7F; buf[1] = 'E'; buf[2] = 'L'; buf[3] = 'F';
+    buf[4] = 1;                       /* 32 bit */
+    buf[5] = 1;                       /* little endian */
+    *(u16 *)(buf + 16) = 2;           /* ET_EXEC */
+    *(u16 *)(buf + 18) = 3;           /* EM_386 */
+    *(u32 *)(buf + 24) = vaddr;       /* entry */
+    *(u32 *)(buf + 28) = 52;          /* phoff */
+    *(u16 *)(buf + 42) = 32;          /* phentsize */
+    *(u16 *)(buf + 44) = 1;           /* phnum */
+    u8 *ph = buf + 52;
+    *(u32 *)(ph + 0)  = 1;            /* PT_LOAD */
+    *(u32 *)(ph + 4)  = 0;            /* offset */
+    *(u32 *)(ph + 8)  = vaddr;        /* vaddr */
+    *(u32 *)(ph + 16) = 16;           /* filesz */
+    *(u32 *)(ph + 20) = 16;           /* memsz */
+}
+
+static void test_elf(void) {
+    u8 buf[128];
+    u32 entry = 0;
+    u32 dir = paging_new_directory();
+    if (!dir) { ok("scratch address space", false); return; }
+
+    ok("rejects a buffer too short to hold a header",
+       elf_load(dir, buf, 8, &entry) == ELF_ERR_SHORT);
+
+    make_elf(buf, 0x40000000);
+    buf[1] = 'X';
+    ok("rejects a bad magic number", elf_load(dir, buf, sizeof(buf), &entry) == ELF_ERR_MAGIC);
+
+    make_elf(buf, 0x40000000);
+    buf[4] = 2;                                     /* claims 64 bit */
+    ok("rejects the wrong class", elf_load(dir, buf, sizeof(buf), &entry) == ELF_ERR_CLASS);
+
+    make_elf(buf, 0x40000000);
+    *(u16 *)(buf + 18) = 40;                        /* ARM */
+    ok("rejects another machine", elf_load(dir, buf, sizeof(buf), &entry) == ELF_ERR_TYPE);
+
+    /* The important one: a program must not be able to ask to be mapped
+       over the kernel. */
+    make_elf(buf, 0x00100000);
+    ok("rejects a segment inside kernel memory",
+       elf_load(dir, buf, sizeof(buf), &entry) == ELF_ERR_RANGE);
+
+    make_elf(buf, 0x40000000);
+    *(u32 *)(buf + 52 + 16) = 4096;                 /* filesz past the end */
+    ok("rejects a segment that runs off the end of the file",
+       elf_load(dir, buf, sizeof(buf), &entry) == ELF_ERR_OVERFLOW);
+
+    make_elf(buf, 0x40000000);
+    ok("accepts a well formed header",
+       elf_load(dir, buf, sizeof(buf), &entry) == ELF_OK && entry == 0x40000000);
+
+    paging_free_directory(dir);
+}
+
+static void test_userspace(void) {
+    /* The stub makes six putc calls and then exits, so the syscall counter
+       moving is direct evidence that ring 3 code ran and crossed back in.
+       Counting tasks would race: it can finish before the check. */
+    u32 before = syscall_count();
+    int pid = user_spawn_stub("selftest-ring3");
+    ok("a ring 3 task can be created", pid > 0);
+    if (pid <= 0) return;
+
+    task_wait((u32)pid);
+    ok("it reached exit on its own", !task_alive((u32)pid));
+    ok("ring 3 code issued system calls", syscall_count() >= before + 7);
+}
+
 int selftest_run(void) {
     passed = failed = 0;
     kprintf("\n=== nyx self test ===\n");
@@ -236,6 +317,8 @@ int selftest_run(void) {
     kprintf("[disk]\n");       test_disk();
     kprintf("[fat]\n");        test_fat();
     kprintf("[network]\n");    test_net();
+    kprintf("[elf]\n");        test_elf();
+    kprintf("[userspace]\n");  test_userspace();
     kprintf("[video]\n");      test_video();
     kprintf("[mouse]\n");      test_mouse();
     kprintf("\n%d passed, %d failed\n", passed, failed);

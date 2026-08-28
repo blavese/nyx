@@ -45,13 +45,15 @@ void guide_print(void) {
     kprintf("     Then: cat page.html\n\n");
 
     vga_set_color(VGA_LCYAN, VGA_BLACK);
-    kprintf("  3. Running things at the same time\n");
+    kprintf("  3. Running real programs\n");
     vga_set_color(VGA_LGREY, VGA_BLACK);
-    kprintf("     ps                       list what is running\n");
-    kprintf("     spawn                    start another task\n");
-    kprintf("     A timer interrupts 100 times a second and swaps\n");
-    kprintf("     between tasks. That is how one CPU does many things.\n\n");
-
+    kprintf("     exec hello.elf           run a program and wait\n");
+    kprintf("     bg count.elf             run one in the background\n");
+    kprintf("     ps                       see what is running\n");
+    kprintf("     These are separate executables, compiled on their\n");
+    kprintf("     own and loaded from the disk. They run in ring 3,\n");
+    kprintf("     where they cannot touch the kernel, and ask for\n");
+    kprintf("     everything through system calls.\n\n");
     vga_set_color(VGA_LCYAN, VGA_BLACK);
     kprintf("  4. The machine itself\n");
     vga_set_color(VGA_LGREY, VGA_BLACK);

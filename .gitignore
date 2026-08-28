@@ -3,6 +3,7 @@ build/
 *.elf
 *.ppm
 *.img
+*.img.gz
 launcher/bin/
 launcher/obj/
 launcher/publish/

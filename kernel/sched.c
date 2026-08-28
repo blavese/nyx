@@ -10,6 +10,7 @@
 #include "timer.h"
 #include "gdt.h"
 #include "io.h"
+#include "paging.h"
 
 #define STACK_SIZE 16384u
 
@@ -55,8 +56,60 @@ task_t *task_create(const char *name, void (*entry)(void)) {
     return t;
 }
 
+task_t *task_create_user(const char *name, u32 dir, u32 entry, u32 stack_top) {
+    task_t *t = (task_t *)kcalloc(sizeof(task_t));
+    if (!t) return 0;
+    u8 *stack = (u8 *)kmalloc(STACK_SIZE);
+    if (!stack) { kfree(t); return 0; }
+
+    t->stack_base = (u32)stack;
+    t->pid = next_pid++;
+    strncpy(t->name, name, sizeof(t->name) - 1);
+    t->state = TASK_READY;
+    t->dir = dir;
+    t->user = true;
+
+    /* A frame taken at a privilege change carries the user stack and its
+       selector as well, and iret pops both on the way back out. */
+    u32 top = ((u32)stack + STACK_SIZE) & ~0xFu;
+    registers_t *f = (registers_t *)(top - sizeof(registers_t));
+    memset(f, 0, sizeof(*f));
+    f->ds      = 0x23;            /* user data, rpl 3 */
+    f->eip     = entry;
+    f->cs      = 0x1B;            /* user code, rpl 3 */
+    f->eflags  = 0x202;           /* interrupts stay on in user code */
+    f->useresp = stack_top;
+    f->ss      = 0x23;
+    f->int_no  = 32;
+    t->esp = (u32)f;
+
+    if (!head) { head = t; t->next = t; }
+    else {
+        task_t *p = head;
+        while (p->next != head) p = p->next;
+        p->next = t;
+        t->next = head;
+    }
+    return t;
+}
+
 task_t *task_current(void) { return current; }
 task_t *task_list(void)    { return head; }
+
+bool task_alive(u32 pid) {
+    if (!head) return false;
+    task_t *p = head;
+    do {
+        if (p->pid == pid) return p->state != TASK_DEAD;
+        p = p->next;
+    } while (p != head);
+    return false;      /* already reaped */
+}
+
+/* Gives up the processor until the given task finishes. */
+void task_wait(u32 pid) {
+    while (task_alive(pid)) task_yield();
+}
 
 u32 task_count(void) {
     if (!head) return 0;
@@ -105,7 +158,14 @@ u32 scheduler_switch(u32 esp) {
     current = next;
     current->state = TASK_RUNNING;
     current->slices++;
+
+    /* The next interrupt taken in this task has to land on a stack the CPU
+       can find, and in user mode it finds it here. */
     tss_set_stack(current->stack_base + STACK_SIZE);
+
+    u32 want = current->dir ? current->dir : paging_kernel_directory();
+    if (want != paging_current_directory()) paging_switch(want);
+
     return current->esp;
 }
 

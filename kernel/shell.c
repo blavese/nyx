@@ -18,6 +18,8 @@
 #include "rtl8139.h"
 #include "http.h"
 #include "mouse.h"
+#include "user.h"
+#include "elf.h"
 #include "io.h"
 #include "welcome.h"
 #include "serial.h"
@@ -55,6 +57,9 @@ static void cmd_help(void) {
             "  ping ADDRESS    ping a host by ip or name\n"
             "  resolve HOST    look up a hostname\n"
             "  fetch HOST [PATH] [FILE]   download a page over http\n"
+            "  exec PROGRAM    run an elf program and wait for it\n"
+            "  bg PROGRAM      run one in the background\n"
+            "  ring3           run the built-in ring 3 test\n"
             "  ps              list tasks\n"
             "  mem             memory usage\n"
             "  uptime          time since boot\n"
@@ -134,6 +139,30 @@ static void execute(char *buf) {
 
     if (!strcmp(c, "help")) cmd_help();
     else if (!strcmp(c, "guide")) guide_print();
+    else if (!strcmp(c, "bg")) {
+        if (argc < 2) { kprintf("usage: bg PROGRAM" "\n"); return; }
+        file_t *f = fs_find(argv[1]);
+        if (!f) { kprintf("bg: %s: no such file" "\n", argv[1]); return; }
+        int rc = user_spawn_elf(argv[1], f->data, f->size);
+        if (rc > 0) kprintf("[%d] %s running in the background" "\n", rc, argv[1]);
+        else kprintf("bg: %s: %s" "\n", argv[1], elf_error(rc));
+    } else if (!strcmp(c, "exec")) {
+        if (argc < 2) { kprintf("usage: exec PROGRAM" "\n" "e.g. exec hello.elf" "\n"); return; }
+        file_t *f = fs_find(argv[1]);
+        if (!f) { kprintf("exec: %s: no such file" "\n", argv[1]); return; }
+        int rc = user_spawn_elf(argv[1], f->data, f->size);
+        if (rc > 0) {
+            /* Wait for it, the way a shell does, so its output is not
+               interleaved with the next prompt. */
+            task_wait((u32)rc);
+        } else {
+            kprintf("exec: %s: %s" "\n", argv[1], elf_error(rc));
+        }
+    } else if (!strcmp(c, "ring3")) {
+        int pid = user_spawn_stub("ring3");
+        if (pid > 0) kprintf("started pid %d in ring 3\n", pid);
+        else kprintf("could not start it (%d)\n", pid);
+    }
     else if (!strcmp(c, "mouse")) {
         if (!mouse_present()) { kprintf("no mouse\n"); return; }
         kprintf("pointer  %d,%d\n", mouse_x(), mouse_y());

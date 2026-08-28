@@ -21,6 +21,7 @@
 #include "fb.h"
 #include "fbcon.h"
 #include "mouse.h"
+#include "syscall.h"
 #include "shell.h"
 #include "selftest.h"
 #include "string.h"
@@ -128,6 +129,7 @@ void kmain(u32 magic, u32 mbi_addr) {
     serial_enable_irq();
     kprintf("  input   ps/2 keyboard + serial (irq driven)\n");
 
+    syscall_init();
     sched_init();
     if (want_selftest) task_create("selftest", selftest_task);
     else               task_create("init", init_task);
