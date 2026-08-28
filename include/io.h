@@ -18,6 +18,10 @@ static inline void outl(u16 port, u32 val) {
     __asm__ volatile ("outl %0, %1" :: "a"(val), "Nd"(port));
 }
 
+static inline u32 inl(u16 port) {
+    u32 r; __asm__ volatile ("inl %1, %0" : "=a"(r) : "Nd"(port)); return r;
+}
+
 static inline void io_wait(void) { outb(0x80, 0); }
 
 static inline void cli(void) { __asm__ volatile ("cli"); }

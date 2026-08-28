@@ -13,6 +13,11 @@
 #include "heap.h"
 #include "sched.h"
 #include "fs.h"
+#include "ata.h"
+#include "diskfs.h"
+#include "pci.h"
+#include "rtl8139.h"
+#include "net.h"
 #include "shell.h"
 #include "selftest.h"
 #include "string.h"
@@ -76,8 +81,30 @@ void kmain(u32 magic, u32 mbi_addr) {
     paging_init();   kprintf("  paging  enabled\n");
     heap_init(HEAP_BASE, HEAP_SIZE);
     kprintf("  heap    %d KiB\n", HEAP_SIZE / 1024);
-    fs_init();       kprintf("  fs      ramfs ready\n");
+    fs_init();
+    if (ata_init()) {
+        kprintf("  disk    %s, %d MiB\n", ata_model(), ata_sectors() / 2048);
+        int n = diskfs_load();
+        if (n >= 0)      kprintf("  fs      %d file(s) restored from disk\n", n);
+        else if (n == -2) {
+            /* A brand new disk should just work rather than telling
+               someone to run a command they have never heard of. */
+            if (diskfs_format()) kprintf("  fs      new disk prepared\n");
+            else                 kprintf("  fs      could not prepare the disk\n");
+        }
+        else              kprintf("  fs      disk unreadable, using memory only\n");
+    } else {
+        kprintf("  disk    none, files will not persist\n");
+    }
     timer_init(100); kprintf("  timer   100 Hz\n");
+    if (rtl_init()) {
+        net_init();
+        const u8 *m = net_mac();
+        kprintf("  net     rtl8139 %02x:%02x:%02x:%02x:%02x:%02x\n",
+                m[0], m[1], m[2], m[3], m[4], m[5]);
+    } else {
+        kprintf("  net     no card found\n");
+    }
     keyboard_init();
     serial_enable_irq();
     kprintf("  input   ps/2 keyboard + serial (irq driven)\n");

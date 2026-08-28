@@ -21,3 +21,5 @@ bool    fs_delete(const char *name);
 u32     fs_count(void);
 file_t *fs_at(u32 i);
 u32     fs_bytes_used(void);
+void    fs_begin_load(void);
+void    fs_end_load(void);

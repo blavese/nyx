@@ -11,7 +11,16 @@ QEMU="${QEMU:-}"
 
 bash build.sh >/dev/null
 
-COMMON=(-kernel build/nyx.elf -m 64 -no-reboot)
+# A raw image file is the disk. It is created on first run and then
+# persists, which is the whole point.
+DISK="${NYX_DISK:-nyx.img}"
+if [ ! -f "$DISK" ]; then
+  echo "creating $DISK (16 MiB)"
+  head -c 16777216 /dev/zero > "$DISK"
+fi
+COMMON=(-kernel build/nyx.elf -m 64 -no-reboot
+        -drive "file=$DISK,format=raw,if=ide,index=0"
+        -netdev user,id=n0 -device rtl8139,netdev=n0)
 case "$1" in
   -T) shift
       set +e

@@ -1,12 +1,12 @@
 # nyx
 
 A small operating system written from scratch for 32-bit x86. It boots from a
-multiboot loader, sets up its own descriptor tables, manages physical and
-virtual memory, preempts its own tasks, and drops you at a shell.
+multiboot loader, manages its own memory, preempts its own tasks, keeps files
+on a real disk, and talks to the internet.
 
 ![nyx booting](docs/boot.png)
 
-It is not a clone of anything. About 2,300 lines of C and assembly, no libc,
+It is not a clone of anything. About 4,000 lines of C and assembly, no libc,
 no third-party code, no runtime dependencies.
 
 ## running it on Windows
@@ -21,7 +21,17 @@ black window opens with the operating system running in it. Type `guide` when
 you get there.
 
 It runs as a normal user, needs no administrator rights, and cannot affect
-Windows: the kernel only ever sees the pretend machine QEMU gives it.
+Windows: the kernel only ever sees the pretend machine QEMU gives it. Your
+files live in a disk image under `%LocalAppData%\nyx`.
+
+Something to try once it boots:
+
+    dhcp
+    fetch example.com / page.html
+    cat page.html
+
+That gets an address from the network, downloads a live web page over TCP, and
+saves it to a disk that survives closing the window.
 
 ## running it from source
 
@@ -32,7 +42,7 @@ i686-elf toolchain to build first.
     ./run.sh -t       boot headless, console on stdout
     ./run.sh -T       run the built-in self test, exit code is the result
 
-Try: guide, help, ls, cat readme.txt, ps, mem, spawn, uptime.
+`run.sh` creates a disk image and attaches a network card automatically.
 
 The Windows launcher lives in `launcher/` and is built with
 `dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true`.
@@ -69,11 +79,26 @@ holding a complete interrupt frame, so switching is a matter of telling the
 interrupt return path to unwind a different one. Tasks sleep, yield and exit,
 and dead ones are reaped.
 
+**Disk.** An ATA PIO driver for the primary bus: IDENTIFY to find the drive and
+its size, then LBA28 reads and writes with a cache flush. PIO moves every word
+through the CPU, which is slow and needs no bus mastering setup, which is the
+right trade at this size.
+
+**Filesystem.** Files are held in memory and the whole filesystem is written
+out to the disk as one image whenever it changes, then read back at boot. A
+blank disk is prepared automatically on first boot. That trades write
+throughput, which nothing here needs, for a format simple enough to be
+obviously correct.
+
+**Network.** PCI enumeration to find the card, then a Realtek RTL8139 driver
+with an interrupt-driven receive ring and four transmit descriptors. On top of
+that: ethernet, ARP with a cache, IPv4 with checksums, ICMP (it answers pings
+and sends them), UDP, a DHCP client, a DNS resolver, and a single-connection
+TCP client with a proper three way handshake and orderly close. `fetch` uses
+all of it to do an HTTP GET.
+
 **Drivers.** VGA text console with scrolling and colour, PS/2 keyboard with
 shift/caps/ctrl, PIT at 100 Hz, and a 16550 serial port driven by IRQ4.
-
-**Filesystem.** Flat and in memory. Files live on the kernel heap and do not
-survive a reboot, because there is no disk driver yet.
 
 **Shell.** Reads from the keyboard or the serial line, whichever produces a
 character first, so a person can type at it and a script can pipe into it.
@@ -81,10 +106,9 @@ character first, so a person can type at it and a script can pipe into it.
 ## testing
 
 The kernel tests itself. `./run.sh -T` boots with selftest on the command line,
-runs 31 checks across every subsystem, then writes to QEMU's debug-exit port so
+runs 44 checks across every subsystem, then writes to QEMU's debug-exit port so
 the host gets a real exit status.
 
-    === nyx self test ===
     [string]           8 checks
     [physical memory]  4 checks
     [paging]           4 checks
@@ -92,12 +116,19 @@ the host gets a real exit status.
     [filesystem]       6 checks
     [timer]            2 checks
     [interrupts]       2 checks
+    [disk]             6 checks
+    [network]          7 checks
 
-    31 passed, 0 failed
+    44 passed, 0 failed
     SELFTEST_PASS
 
+The disk test writes a pattern to a spare sector, reads it back, compares it,
+and puts the original contents back. The network test runs a real DHCP
+handshake, pings the gateway, and resolves a real hostname, so it only passes
+if the whole stack works.
+
 `tools/shell_test.sh` is the other half. It boots the OS, types commands at the
-shell over the serial line, and checks what comes back. All nine checks pass.
+shell over the serial line, and checks what comes back.
 
 ## things that went wrong
 
@@ -139,14 +170,24 @@ large range:
 
 - **No userspace.** Everything runs in ring 0. The GDT has ring 3 descriptors
   and the IDT has a syscall gate at 0x80 ready, but nothing crosses yet.
-- **No disk.** No ATA or virtio driver, so the filesystem is RAM only.
 - **No ELF loader**, so there are no separate programs, only kernel tasks.
-- **Flat filesystem**, no directories.
+- **Flat filesystem**, no directories, and the whole thing is rewritten on
+  every change rather than updated in place.
+- **TCP has no retransmission** and handles one connection at a time. It is
+  correct over a link that does not drop packets, which is what an emulated
+  network is, and would need real work before it faced the open internet
+  directly.
+- **No TLS**, so `fetch` is plain HTTP only.
+- **Ping only reaches the local network.** ICMP is implemented in both
+  directions and pinging the gateway works. QEMU's user mode networking does
+  not forward ICMP to the wider internet without elevated privileges, so
+  pinging an outside address times out even though DNS and TCP to that same
+  address work.
 - **32-bit only**, single processor, no SMP and no APIC.
-- **No networking.**
 
-It is a real kernel in that it boots on the bare machine and manages its own
-hardware. It is not something you would run anything real on, and it is several
+It is a real kernel in that it boots on the bare machine, drives its own
+hardware, and can fetch a file from a real server and keep it on a real disk.
+It is not something you would run anything important on, and it is several
 orders of magnitude away from Linux, which is roughly 30 million lines.
 
 ## layout
@@ -160,14 +201,21 @@ orders of magnitude away from Linux, which is roughly 30 million lines.
     kernel/paging.c    two-level paging
     kernel/heap.c      kmalloc
     kernel/sched.c     preemptive round-robin tasks
+    kernel/ata.c       ata pio disk driver
+    kernel/diskfs.c    reading and writing the filesystem image
+    kernel/fs.c        the filesystem itself
+    kernel/pci.c       pci configuration space
+    kernel/rtl8139.c   network card driver
+    kernel/net.c       ethernet, arp, ip, icmp, udp, dhcp, dns
+    kernel/tcp.c       tcp client
+    kernel/http.c      http get
     kernel/vga.c       text console
     kernel/serial.c    16550 uart, interrupt driven
     kernel/keyboard.c  ps/2 keyboard
     kernel/timer.c     programmable interval timer
-    kernel/fs.c        in-memory filesystem
     kernel/shell.c     the shell
-    kernel/selftest.c  the boot-time test suite
     kernel/welcome.c   the first-run text and the guided tour
+    kernel/selftest.c  the boot-time test suite
     kernel/divide.c    64-bit division helpers libgcc would normally provide
     tools/             build checks and the shell test harness
     launcher/          the Windows launcher (C#/WPF)

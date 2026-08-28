@@ -24,40 +24,45 @@ void guide_print(void) {
     kprintf("  ------------\n\n");
 
     vga_set_color(VGA_LCYAN, VGA_BLACK);
-    kprintf("  1. Files\n");
+    kprintf("  1. Files that stay put\n");
     vga_set_color(VGA_LGREY, VGA_BLACK);
     kprintf("     ls                       see what is stored\n");
     kprintf("     cat readme.txt           read a file\n");
     kprintf("     write notes.txt hello    make one\n");
-    kprintf("     rm notes.txt             delete it\n");
-    kprintf("     Files live in memory, so they vanish on reboot.\n\n");
+    kprintf("     disk                     the drive it is all kept on\n");
+    kprintf("     Files are written to a real disk. Close this window,\n");
+    kprintf("     start it again, and they will still be here.\n\n");
 
     vga_set_color(VGA_LCYAN, VGA_BLACK);
-    kprintf("  2. Running programs at the same time\n");
+    kprintf("  2. The internet\n");
+    vga_set_color(VGA_LGREY, VGA_BLACK);
+    kprintf("     dhcp                     ask the network for an address\n");
+    kprintf("     net                      show what it got\n");
+    kprintf("     ping 10.0.2.2            talk to the gateway\n");
+    kprintf("     resolve example.com      look up a real name\n");
+    kprintf("     fetch example.com / page.html\n");
+    kprintf("     That last one downloads a live web page and saves it.\n");
+    kprintf("     Then: cat page.html\n\n");
+
+    vga_set_color(VGA_LCYAN, VGA_BLACK);
+    kprintf("  3. Running things at the same time\n");
     vga_set_color(VGA_LGREY, VGA_BLACK);
     kprintf("     ps                       list what is running\n");
     kprintf("     spawn                    start another task\n");
-    kprintf("     ps                       watch it appear\n");
     kprintf("     A timer interrupts 100 times a second and swaps\n");
     kprintf("     between tasks. That is how one CPU does many things.\n\n");
 
     vga_set_color(VGA_LCYAN, VGA_BLACK);
-    kprintf("  3. The machine itself\n");
+    kprintf("  4. The machine itself\n");
     vga_set_color(VGA_LGREY, VGA_BLACK);
-    kprintf("     mem                      memory the kernel found and used\n");
+    kprintf("     mem                      memory found and used\n");
     kprintf("     uptime                   how long since boot\n");
-    kprintf("     uname                    what this is\n\n");
-
-    vga_set_color(VGA_LCYAN, VGA_BLACK);
-    kprintf("  4. Crashing it on purpose\n");
-    vga_set_color(VGA_LGREY, VGA_BLACK);
-    kprintf("     fault                    divide by zero\n");
-    kprintf("     The CPU catches it and the kernel prints where it\n");
-    kprintf("     happened, rather than the machine just stopping.\n");
-    kprintf("     You will need to close the window afterwards.\n\n");
+    kprintf("     fault                    divide by zero on purpose\n");
+    kprintf("     The CPU catches that last one and the kernel prints\n");
+    kprintf("     where it happened rather than just stopping.\n\n");
 
     vga_set_color(VGA_LGREEN, VGA_BLACK);
-    kprintf("  Nothing here can harm your real computer. This is running\n");
-    kprintf("  inside an emulator, in its own pretend machine.\n\n");
+    kprintf("  None of this can harm your real computer. It runs inside\n");
+    kprintf("  an emulator, on its own pretend machine and its own disk.\n\n");
     vga_set_color(VGA_LGREY, VGA_BLACK);
 }

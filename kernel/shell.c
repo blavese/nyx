@@ -11,6 +11,11 @@
 #include "timer.h"
 #include "sched.h"
 #include "fs.h"
+#include "ata.h"
+#include "diskfs.h"
+#include "net.h"
+#include "rtl8139.h"
+#include "http.h"
 #include "io.h"
 #include "welcome.h"
 #include "serial.h"
@@ -40,6 +45,14 @@ static void cmd_help(void) {
             "  write NAME TEXT create or overwrite a file\n"
             "  append NAME TXT add a line to a file\n"
             "  rm NAME         delete a file\n"
+            "  disk            show the attached disk\n"
+            "  sync            force a write to disk\n"
+            "  format          erase the disk and start clean\n"
+            "  net             network status\n"
+            "  dhcp            ask the network for an address\n"
+            "  ping ADDRESS    ping a host by ip or name\n"
+            "  resolve HOST    look up a hostname\n"
+            "  fetch HOST [PATH] [FILE]   download a page over http\n"
             "  ps              list tasks\n"
             "  mem             memory usage\n"
             "  uptime          time since boot\n"
@@ -119,6 +132,67 @@ static void execute(char *buf) {
 
     if (!strcmp(c, "help")) cmd_help();
     else if (!strcmp(c, "guide")) guide_print();
+    else if (!strcmp(c, "sync")) {
+        kprintf(diskfs_sync() ? "written to disk\n" : "sync: no disk\n");
+    } else if (!strcmp(c, "format")) {
+        if (!diskfs_available()) { kprintf("format: no disk attached\n"); return; }
+        kprintf(diskfs_format() && diskfs_sync() ? "disk formatted\n" : "format failed\n");
+    } else if (!strcmp(c, "disk")) {
+        if (!ata_present()) { kprintf("no disk attached\n"); return; }
+        kprintf("model    %s\n", ata_model());
+        kprintf("size     %d sectors (%d MiB)\n", ata_sectors(), ata_sectors() / 2048);
+        kprintf("state    %s\n", diskfs_mounted() ? "mounted" : "not mounted");
+    }    else if (!strcmp(c, "net")) {
+        if (!net_up()) { kprintf("no network card\n"); return; }
+        const u8 *m = net_mac();
+        char b[20];
+        kprintf("mac      %02x:%02x:%02x:%02x:%02x:%02x\n", m[0],m[1],m[2],m[3],m[4],m[5]);
+        if (net_ip()) {
+            net_format_ip(net_ip(), b);      kprintf("address  %s\n", b);
+            net_format_ip(net_netmask(), b); kprintf("netmask  %s\n", b);
+            net_format_ip(net_gateway(), b); kprintf("gateway  %s\n", b);
+            net_format_ip(net_dns(), b);     kprintf("dns      %s\n", b);
+        } else {
+            kprintf("address  none, run: dhcp\n");
+        }
+        kprintf("packets  %d in, %d out\n", net_rx_packets(), net_tx_packets());
+    } else if (!strcmp(c, "dhcp")) {
+        if (!net_up()) { kprintf("no network card\n"); return; }
+        kprintf("asking for an address...\n");
+        if (net_dhcp(6000)) {
+            char b[20]; net_format_ip(net_ip(), b);
+            kprintf("got %s\n", b);
+        } else kprintf("no answer\n");
+    } else if (!strcmp(c, "ping")) {
+        if (argc < 2) { kprintf("usage: ping ADDRESS\n"); return; }
+        if (!net_ip()) { kprintf("no address yet, run: dhcp\n"); return; }
+        ipv4_t target = net_parse_ip(argv[1]);
+        if (!target) {
+            if (!net_resolve(argv[1], &target, 4000)) { kprintf("cannot resolve %s\n", argv[1]); return; }
+        }
+        char b[20]; net_format_ip(target, b);
+        for (int i = 0; i < 4; i++) {
+            int ms = net_ping(target, 2000);
+            if (ms >= 0) kprintf("reply from %s: seq=%d time=%dms\n", b, i + 1, ms);
+            else         kprintf("no reply from %s: seq=%d\n", b, i + 1);
+        }
+    } else if (!strcmp(c, "fetch")) {
+        if (argc < 2) { kprintf("usage: fetch HOST [PATH] [SAVEAS]\n"); return; }
+        if (!net_ip()) { kprintf("no address yet, run: dhcp\n"); return; }
+        const char *path = argc > 2 ? argv[2] : "/";
+        const char *save = argc > 3 ? argv[3] : 0;
+        int rc = http_get(argv[1], path, save);
+        if (rc == HTTP_ERR_RESOLVE) kprintf("cannot resolve %s\n", argv[1]);
+        else if (rc == HTTP_ERR_CONNECT) kprintf("could not connect\n");
+        else if (rc < 0) kprintf("fetch failed\n");
+    } else if (!strcmp(c, "resolve")) {
+        if (argc < 2) { kprintf("usage: resolve HOSTNAME\n"); return; }
+        ipv4_t ip;
+        if (net_resolve(argv[1], &ip, 4000)) {
+            char b[20]; net_format_ip(ip, b);
+            kprintf("%s is %s\n", argv[1], b);
+        } else kprintf("cannot resolve %s\n", argv[1]);
+    }
     else if (!strcmp(c, "ls")) cmd_ls();
     else if (!strcmp(c, "cat")) {
         if (argc < 2) kprintf("usage: cat NAME\n"); else cmd_cat(argv[1]);

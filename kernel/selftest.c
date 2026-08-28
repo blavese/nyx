@@ -10,6 +10,10 @@
 #include "timer.h"
 #include "sched.h"
 #include "idt.h"
+#include "ata.h"
+#include "diskfs.h"
+#include "net.h"
+#include "rtl8139.h"
 
 static int passed, failed;
 
@@ -118,6 +122,44 @@ static void test_interrupts(void) {
     ok("handler is re-entrant", bp_hits == before + 3);
 }
 
+
+static void test_disk(void) {
+    if (!ata_present()) { kprintf("  SKIP  no disk attached\n"); return; }
+    ok("disk reports a size", ata_sectors() > 0);
+
+    /* Use a sector well past the filesystem so nothing real is disturbed,
+       and put back whatever was there. */
+    u32 lba = ata_sectors() - 4;
+    u8 original[SECTOR_SIZE], probe[SECTOR_SIZE], back[SECTOR_SIZE];
+    ok("read a sector", ata_read(lba, 1, original));
+
+    for (u32 i = 0; i < SECTOR_SIZE; i++) probe[i] = (u8)(i * 7 + 3);
+    ok("write a sector", ata_write(lba, 1, probe));
+    ok("read it back", ata_read(lba, 1, back));
+    ok("what came back is what went out", memcmp(probe, back, SECTOR_SIZE) == 0);
+
+    ata_write(lba, 1, original);
+    ok("original contents restored", ata_read(lba, 1, back) && memcmp(original, back, SECTOR_SIZE) == 0);
+}
+
+static void test_net(void) {
+    if (!net_up()) { kprintf("  SKIP  no network card\n"); return; }
+    const u8 *m = net_mac();
+    bool nonzero = false;
+    for (int i = 0; i < 6; i++) if (m[i]) nonzero = true;
+    ok("card has a mac address", nonzero);
+
+    ok("dhcp obtained a lease", net_dhcp(8000));
+    if (net_ip()) {
+        ok("address is not zero", net_ip() != 0);
+        ok("gateway was supplied", net_gateway() != 0);
+        ok("resolver was supplied", net_dns() != 0);
+        ok("gateway answers icmp", net_ping(net_gateway(), 3000) >= 0);
+        ipv4_t ip = 0;
+        ok("dns resolves a name", net_resolve("example.com", &ip, 6000) && ip != 0);
+    }
+}
+
 int selftest_run(void) {
     passed = failed = 0;
     kprintf("\n=== nyx self test ===\n");
@@ -128,6 +170,8 @@ int selftest_run(void) {
     kprintf("[filesystem]\n"); test_fs();
     kprintf("[timer]\n");      test_timer();
     kprintf("[interrupts]\n"); test_interrupts();
+    kprintf("[disk]\n");       test_disk();
+    kprintf("[network]\n");    test_net();
     kprintf("\n%d passed, %d failed\n", passed, failed);
     kprintf(failed ? "SELFTEST_FAIL\n" : "SELFTEST_PASS\n");
     return failed;

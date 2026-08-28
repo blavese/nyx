@@ -3,8 +3,17 @@
 #include "fs.h"
 #include "heap.h"
 #include "string.h"
+#include "diskfs.h"
 
 static file_t files[FS_MAX_FILES];
+static bool loading = false;   /* suppresses write-back while loading */
+
+void fs_begin_load(void) { loading = true; }
+void fs_end_load(void)   { loading = false; }
+
+static void writeback(void) {
+    if (!loading && diskfs_available()) diskfs_sync();
+}
 
 void fs_init(void) { memset(files, 0, sizeof(files)); }
 
@@ -45,6 +54,7 @@ bool fs_write(const char *name, const void *buf, u32 len) {
     if (!f || !ensure(f, len)) return false;
     memcpy(f->data, buf, len);
     f->size = len;
+    writeback();
     return true;
 }
 
@@ -53,6 +63,7 @@ bool fs_append(const char *name, const void *buf, u32 len) {
     if (!f || !ensure(f, f->size + len)) return false;
     memcpy(f->data + f->size, buf, len);
     f->size += len;
+    writeback();
     return true;
 }
 
@@ -61,6 +72,7 @@ bool fs_delete(const char *name) {
     if (!f) return false;
     if (f->data) kfree(f->data);
     memset(f, 0, sizeof(*f));
+    writeback();
     return true;
 }
 

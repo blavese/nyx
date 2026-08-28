@@ -21,7 +21,7 @@
                        Foreground="{StaticResource Accent}"/>
             <TextBlock Margin="0,6,0,0" FontSize="14" Foreground="{StaticResource Dim}"
                        TextWrapping="Wrap"
-                       Text="A small operating system, written from scratch. This runs it in a safe pretend computer on your machine, so nothing touches Windows."/>
+                       Text="A small operating system, written from scratch. It has its own disk and its own network connection, and runs in a safe pretend computer so nothing touches Windows."/>
         </StackPanel>
 
         <!-- status -->
@@ -55,7 +55,7 @@
                                FontSize="13" FontWeight="SemiBold" Margin="0,0,0,12"/>
                     <Grid>
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="150"/>
+                            <ColumnDefinition Width="215"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
                         <Grid.RowDefinitions>
@@ -65,31 +65,31 @@
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="guide" FontFamily="Consolas" FontSize="13.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="guide" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
                         <TextBlock Grid.Row="0" Grid.Column="1" Text="a short tour, start here" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
 
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="ls" FontFamily="Consolas" FontSize="13.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
-                        <TextBlock Grid.Row="1" Grid.Column="1" Text="list the files it is storing" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="dhcp" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="1" Grid.Column="1" Text="get an address from the network" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
 
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="cat readme.txt" FontFamily="Consolas" FontSize="13.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
-                        <TextBlock Grid.Row="2" Grid.Column="1" Text="read one of them" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="fetch example.com / p.html" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="2" Grid.Column="1" Text="download a real web page" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
 
-                        <TextBlock Grid.Row="3" Grid.Column="0" Text="ps" FontFamily="Consolas" FontSize="13.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
-                        <TextBlock Grid.Row="3" Grid.Column="1" Text="see what is running right now" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="ls" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="3" Grid.Column="1" Text="list your files, they persist" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
 
-                        <TextBlock Grid.Row="4" Grid.Column="0" Text="mem" FontFamily="Consolas" FontSize="13.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
-                        <TextBlock Grid.Row="4" Grid.Column="1" Text="how much memory it found and used" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="cat p.html" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="4" Grid.Column="1" Text="read what you downloaded" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
 
-                        <TextBlock Grid.Row="5" Grid.Column="0" Text="spawn" FontFamily="Consolas" FontSize="13.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
-                        <TextBlock Grid.Row="5" Grid.Column="1" Text="start another task, then run ps again" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="5" Grid.Column="0" Text="ps" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}" Margin="0,0,0,7"/>
+                        <TextBlock Grid.Row="5" Grid.Column="1" Text="see what is running right now" FontSize="13" Foreground="{StaticResource Dim}" Margin="0,0,0,7"/>
 
-                        <TextBlock Grid.Row="6" Grid.Column="0" Text="help" FontFamily="Consolas" FontSize="13.5" Foreground="{StaticResource Accent}"/>
+                        <TextBlock Grid.Row="6" Grid.Column="0" Text="help" FontFamily="Consolas" FontSize="12.5" Foreground="{StaticResource Accent}"/>
                         <TextBlock Grid.Row="6" Grid.Column="1" Text="every command" FontSize="13" Foreground="{StaticResource Dim}"/>
                     </Grid>
 
                     <TextBlock Margin="0,16,0,0" FontSize="12.5" Foreground="{StaticResource Dim}"
                                TextWrapping="Wrap"
-                               Text="To leave, just close the black window. Nothing is saved: the whole machine is thrown away each time."/>
+                               Text="Your files are kept on a disk image in your AppData folder, so they are still there next time. To leave, just close the black window."/>
                 </StackPanel>
             </ScrollViewer>
         </Border>

@@ -72,9 +72,34 @@ public static class Emulator
         return dest;
     }
 
-    /// <summary>Boots the kernel in its own window.</summary>
+    /// <summary>Where the user's disk image lives, so files survive between runs.</summary>
+    public static string DiskPath
+    {
+        get
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "nyx");
+            Directory.CreateDirectory(dir);
+            return Path.Combine(dir, "disk.img");
+        }
+    }
+
+    private const long DiskBytes = 32L * 1024 * 1024;
+
+    /// <summary>Creates the disk image on first run. Existing images are left alone.</summary>
+    public static void EnsureDisk()
+    {
+        var path = DiskPath;
+        if (File.Exists(path) && new FileInfo(path).Length >= DiskBytes) return;
+        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write);
+        fs.SetLength(DiskBytes);
+    }
+
+    /// <summary>Boots the kernel in its own window, with a disk and a network card.</summary>
     public static Process Start(string qemu, string kernel)
     {
+        EnsureDisk();
+
         var psi = new ProcessStartInfo(qemu)
         {
             UseShellExecute = false,
@@ -84,6 +109,15 @@ public static class Emulator
         psi.ArgumentList.Add("-m");           psi.ArgumentList.Add("64");
         psi.ArgumentList.Add("-no-reboot");
         psi.ArgumentList.Add("-name");        psi.ArgumentList.Add("nyx");
+
+        // a persistent disk, so anything saved is still there next time
+        psi.ArgumentList.Add("-drive");
+        psi.ArgumentList.Add($"file={DiskPath},format=raw,if=ide,index=0");
+
+        // user mode networking: no admin rights, no bridge, no host exposure
+        psi.ArgumentList.Add("-netdev"); psi.ArgumentList.Add("user,id=n0");
+        psi.ArgumentList.Add("-device");  psi.ArgumentList.Add("rtl8139,netdev=n0");
+
         // no -serial stdio: that would pop a console window next to the machine
         return Process.Start(psi) ?? throw new InvalidOperationException("QEMU did not start.");
     }
