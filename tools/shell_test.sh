@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Drives the shell over the serial line and checks what comes back.
+#
+# Input is fed one character at a time with a small gap. QEMU's -serial stdio
+# backend does not apply back pressure to a pipe: bytes written while the
+# guest has not drained the UART are dropped by the host before the kernel
+# ever sees them. (Measured: a 26 byte burst reached the ISR as 4 bytes, with
+# the kernel's own ring buffer reporting zero drops.) Typing speed is well
+# within what the guest keeps up with.
+set -e
+cd "$(dirname "$0")/.."
+
+QEMU="${QEMU:-}"
+[ -z "$QEMU" ] && QEMU=$(command -v qemu-system-i386 || true)
+[ -z "$QEMU" ] && QEMU="/c/Program Files/qemu/qemu-system-i386.exe"
+
+bash build.sh >/dev/null
+OUT=$(mktemp)
+
+type_line() {
+  local s="$1"
+  local i
+  for (( i=0; i<${#s}; i++ )); do
+    printf '%s' "${s:$i:1}"
+    sleep 0.03
+  done
+  printf '\n'
+  sleep 0.45
+}
+
+feed() {
+  sleep 2.5
+  type_line "uname"
+  type_line "ls"
+  type_line "cat hello.txt"
+  type_line "write notes.txt shell wrote this"
+  type_line "cat notes.txt"
+  type_line "rm notes.txt"
+  type_line "cat notes.txt"
+  type_line "ps"
+  type_line "mem"
+  type_line "spawn"
+  type_line "echo done testing"
+  sleep 1.5
+}
+
+feed | timeout 90 "$QEMU" -kernel build/nyx.elf -m 64 -no-reboot -display none -serial stdio > "$OUT" 2>&1 || true
+
+fails=0
+check() {
+  if grep -qF "$1" "$OUT"; then echo "  PASS  $2"
+  else echo "  FAIL  $2  (wanted: $1)"; fails=$((fails+1)); fi
+}
+
+echo "=== shell test ==="
+check "nyx 0.1.0 i686"           "uname reports the kernel"
+check "readme.txt"               "ls shows the seeded files"
+check "hello from a filesystem"  "cat prints file contents"
+check "shell wrote this"         "write then cat round trips"
+check "no such file"             "cat reports a deleted file as missing"
+check "PID"                      "ps prints the task table"
+check "physical:"                "mem reports physical memory"
+check "spawned pid"              "spawn creates a task"
+check "done testing"             "echo works"
+echo
+if [ $fails -eq 0 ]; then echo "shell test: all checks passed"; else echo "shell test: $fails failed"; fi
+echo "(transcript: $OUT)"
+exit $fails

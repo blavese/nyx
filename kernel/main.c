@@ -1,0 +1,91 @@
+#include "types.h"
+#include "vga.h"
+#include "serial.h"
+#include "printf.h"
+#include "gdt.h"
+#include "idt.h"
+#include "pic.h"
+#include "timer.h"
+#include "keyboard.h"
+#include "multiboot.h"
+#include "pmm.h"
+#include "paging.h"
+#include "heap.h"
+#include "sched.h"
+#include "fs.h"
+#include "shell.h"
+#include "selftest.h"
+#include "string.h"
+#include "io.h"
+
+#define HEAP_BASE (8u * 1024 * 1024)
+#define HEAP_SIZE (4u * 1024 * 1024)
+
+static bool want_selftest = false;
+
+/* QEMU's isa-debug-exit device: writing here ends the VM with (code<<1)|1,
+   which is how the test script gets a real exit status out of the kernel. */
+static void machine_exit(u32 code) {
+    outl(0xF4, code);
+    for (;;) hlt();
+}
+
+static void banner(void) {
+    vga_set_color(VGA_LCYAN, VGA_BLACK);
+    kprintf("\n  +--------------------------------+\n");
+    kprintf("  |  %s %-25s|\n", KERNEL_NAME, KERNEL_VERSION);
+    kprintf("  |  i686 protected mode           |\n");
+    kprintf("  +--------------------------------+\n\n");
+    vga_set_color(VGA_LGREY, VGA_BLACK);
+}
+
+static void selftest_task(void) {
+    int failures = selftest_run();
+    machine_exit(failures ? 2 : 0);
+}
+
+static void init_task(void) {
+    fs_write("readme.txt",
+             "nyx is a small operating system written from scratch.\n"
+             "It boots via multiboot, manages its own memory, and\n"
+             "preempts its own tasks. Try: ls, cat, ps, mem, help\n", 158);
+    fs_write("hello.txt", "hello from a filesystem that lives in RAM\n", 42);
+    shell_task();
+}
+
+void kmain(u32 magic, u32 mbi_addr) {
+    serial_init();
+    vga_init();
+
+    if (magic != MULTIBOOT_BOOTLOADER_MAGIC)
+        panic("not booted by a multiboot loader (magic=%x)", magic);
+    multiboot_info_t *mbi = (multiboot_info_t *)mbi_addr;
+
+    if ((mbi->flags & (1 << 2)) && mbi->cmdline) {
+        const char *cmd = (const char *)mbi->cmdline;
+        for (const char *p = cmd; *p; p++)
+            if (!strncmp(p, "selftest", 8)) { want_selftest = true; break; }
+    }
+
+    banner();
+
+    gdt_init();      kprintf("  gdt     flat segments, tss installed\n");
+    idt_init();      kprintf("  idt     256 vectors\n");
+    pic_init();      kprintf("  pic     irqs remapped to 32..47\n");
+    pmm_init(mbi);   kprintf("  memory  %d KiB usable\n", pmm_free_frames() * 4);
+    paging_init();   kprintf("  paging  enabled\n");
+    heap_init(HEAP_BASE, HEAP_SIZE);
+    kprintf("  heap    %d KiB\n", HEAP_SIZE / 1024);
+    fs_init();       kprintf("  fs      ramfs ready\n");
+    timer_init(100); kprintf("  timer   100 Hz\n");
+    keyboard_init();
+    serial_enable_irq();
+    kprintf("  input   ps/2 keyboard + serial (irq driven)\n");
+
+    sched_init();
+    if (want_selftest) task_create("selftest", selftest_task);
+    else               task_create("init", init_task);
+
+    kprintf("  sched   %d task(s)\n", task_count());
+    sched_start();
+}
