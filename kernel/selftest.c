@@ -12,6 +12,7 @@
 #include "idt.h"
 #include "ata.h"
 #include "diskfs.h"
+#include "fat.h"
 #include "net.h"
 #include "rtl8139.h"
 #include "fb.h"
@@ -194,6 +195,34 @@ static void test_mouse(void) {
        mouse_y() >= 0 && mouse_y() < (i32)fb_height());
 }
 
+
+static void test_fat(void) {
+    if (!ata_present()) { kprintf("  SKIP  no disk attached\n"); return; }
+    ok("volume is mounted", fat_mounted());
+    ok("cluster count is in the FAT16 range",
+       fat_total_clusters() >= 4085 && fat_total_clusters() <= 65524);
+    ok("clusters are a sensible size", fat_cluster_bytes() >= 512);
+
+    /* A file that spans more than one cluster exercises chain following,
+       which a single sector write would not. */
+    u32 big = fat_cluster_bytes() * 2 + 137;
+    u8 *out = (u8 *)kmalloc(big);
+    u8 *in  = (u8 *)kmalloc(big);
+    if (!out || !in) { ok("scratch buffers", false); return; }
+    for (u32 i = 0; i < big; i++) out[i] = (u8)(i * 31 + 7);
+
+    ok("write a multi-cluster file", fat_write_file("sptest.bin", out, big));
+    int got = fat_read_file("sptest.bin", in, big);
+    ok("read back the same length", got == (int)big);
+    ok("read back the same bytes", got == (int)big && memcmp(out, in, big) == 0);
+    ok("it appears in the directory", fat_count() > 0);
+    ok("delete removes it", fat_delete_file("sptest.bin"));
+    ok("and it is gone", fat_read_file("sptest.bin", in, big) < 0);
+
+    kfree(out);
+    kfree(in);
+}
+
 int selftest_run(void) {
     passed = failed = 0;
     kprintf("\n=== nyx self test ===\n");
@@ -205,6 +234,7 @@ int selftest_run(void) {
     kprintf("[timer]\n");      test_timer();
     kprintf("[interrupts]\n"); test_interrupts();
     kprintf("[disk]\n");       test_disk();
+    kprintf("[fat]\n");        test_fat();
     kprintf("[network]\n");    test_net();
     kprintf("[video]\n");      test_video();
     kprintf("[mouse]\n");      test_mouse();

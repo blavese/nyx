@@ -13,6 +13,7 @@
 #include "fs.h"
 #include "ata.h"
 #include "diskfs.h"
+#include "fat.h"
 #include "net.h"
 #include "rtl8139.h"
 #include "http.h"
@@ -152,6 +153,11 @@ static void execute(char *buf) {
         kprintf("model    %s\n", ata_model());
         kprintf("size     %d sectors (%d MiB)\n", ata_sectors(), ata_sectors() / 2048);
         kprintf("state    %s\n", diskfs_mounted() ? "mounted" : "not mounted");
+        if (fat_mounted()) {
+            kprintf("format   FAT16, %d clusters of %d bytes\n",
+                    fat_total_clusters(), fat_cluster_bytes());
+            kprintf("free     %d KiB\n", fat_free_bytes() / 1024);
+        }
     }    else if (!strcmp(c, "net")) {
         if (!net_up()) { kprintf("no network card\n"); return; }
         const u8 *m = net_mac();

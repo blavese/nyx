@@ -57,8 +57,8 @@ void guide_print(void) {
     vga_set_color(VGA_LGREY, VGA_BLACK);
     kprintf("     mem                      memory found and used\n");
     kprintf("     uptime                   how long since boot\n");
-    kprintf("     fault                    divide by zero on purpose\n");
     kprintf("     mouse                    where the pointer is\n");
+    kprintf("     fault                    divide by zero on purpose\n");
     kprintf("     The CPU catches that last one and the kernel prints\n");
     kprintf("     where it happened rather than just stopping.\n\n");
 
