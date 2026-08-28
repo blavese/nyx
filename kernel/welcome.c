@@ -30,6 +30,9 @@ void guide_print(void) {
     kprintf("     Drag a title bar to move a window, click one to\n");
     kprintf("     bring it forward, and the red box closes it.\n");
     kprintf("     Pick a colour and drag on the white area to draw.\n");
+    kprintf("     paint is not part of the kernel. It is a separate\n");
+    kprintf("     program running in ring 3, drawing into pixels the\n");
+    kprintf("     kernel mapped into it.\n");
     kprintf("     Escape returns you here.\n\n");
 
     vga_set_color(VGA_LCYAN, VGA_BLACK);
@@ -58,11 +61,12 @@ void guide_print(void) {
     vga_set_color(VGA_LGREY, VGA_BLACK);
     kprintf("     exec hello.elf           run a program and wait\n");
     kprintf("     bg count.elf             run one in the background\n");
+    kprintf("     exec wintest.elf         prove a window crosses the ring\n");
     kprintf("     ps                       see what is running\n");
     kprintf("     These are separate executables, compiled on their\n");
-    kprintf("     own and loaded from the disk. They run in ring 3,\n");
-    kprintf("     where they cannot touch the kernel, and ask for\n");
-    kprintf("     everything through system calls.\n\n");
+    kprintf("     own. They run in ring 3, where they cannot touch\n");
+    kprintf("     the kernel, and ask for everything through system\n");
+    kprintf("     calls. ls shows them next to your files.\n\n");
     vga_set_color(VGA_LCYAN, VGA_BLACK);
     kprintf("  5. The machine itself\n");
     vga_set_color(VGA_LGREY, VGA_BLACK);

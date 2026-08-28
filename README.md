@@ -2,8 +2,8 @@
 
 A small operating system written from scratch for 32-bit x86. It boots from a
 multiboot loader, drives a framebuffer, manages its own memory, preempts its
-own tasks, keeps files on a FAT16 disk, talks to the internet, runs real
-programs in ring 3, and has a desktop with draggable windows.
+own tasks, keeps files on a FAT16 disk, talks to the internet, and runs a
+desktop whose programs are real ring 3 processes.
 
 ![the nyx desktop](docs/desktop.png)
 
@@ -94,24 +94,35 @@ holding a complete interrupt frame, so switching is a matter of telling the
 interrupt return path to unwind a different one. Tasks sleep, yield and exit,
 and dead ones are reaped.
 
-**Disk.** An ATA PIO driver for the primary bus: IDENTIFY to find the drive and
-its size, then LBA28 reads and writes with a cache flush. PIO moves every word
-through the CPU, which is slow and needs no bus mastering setup, which is the
-right trade at this size.
+**Disk.** Two drivers behind one block layer. AHCI is tried first, because it
+is what a real machine and every modern virtual machine present: the driver
+builds a command list and a scatter-gather table in memory and lets the
+controller do the transfer itself. If there is no AHCI controller it falls back
+to ATA PIO on the primary bus, which moves every word through the CPU and needs
+no bus mastering setup. Whichever answers, the rest of the kernel sees the same
+four calls.
 
 **Filesystem.** FAT16, so the disk is not a sealed box: other tools can open
 the image and files move in both directions. Files are worked on in memory and
-written through on every change. A blank disk is formatted automatically on
-first boot. `tools/readfat.py` parses the image straight from the
+written through on every change. Writes are ordered so that losing power part
+way through cannot destroy what was already there: the new cluster chain is
+written and flushed first, the directory entry is committed as a single sector,
+and only then is the old chain released. Anything an interruption stranded is
+found and reclaimed at the next mount. A blank disk is formatted automatically
+on first boot. `tools/readfat.py` parses the image straight from the
 specification, sharing no code with the kernel, and can copy a file in from the
 host.
 
-**Network.** PCI enumeration to find the card, then a Realtek RTL8139 driver
-with an interrupt-driven receive ring and four transmit descriptors. On top of
-that: ethernet, ARP with a cache, IPv4 with checksums, ICMP (it answers pings
-and sends them), UDP, a DHCP client, a DNS resolver, and a single-connection
-TCP client with a proper three way handshake and orderly close. `fetch` uses
-all of it to do an HTTP GET.
+**Network.** PCI enumeration to find the card, then one of two drivers behind
+a common interface. The Intel e1000 is tried first, since it is what VirtualBox
+and VMware present by default; it is driven through memory-mapped registers and
+descriptor rings the card DMAs into by itself. A Realtek RTL8139 driver covers
+the other common case with a circular receive buffer and four transmit
+descriptors. On top of either: ethernet, ARP with a cache, IPv4 with checksums,
+ICMP (it answers pings and sends them), UDP, a DHCP client, a DNS resolver, and
+a single-connection TCP client with a three way handshake, orderly close, and
+retransmission with exponential backoff. `fetch` uses all of it to do an
+HTTP GET.
 
 **Graphics.** Mode setting through the Bochs VBE dispatch ports rather than a
 BIOS call, so it works from protected mode with no real mode trampoline and no
@@ -121,20 +132,31 @@ card in one go, because compositing directly in video memory over PCI is
 visibly slow. The console is redrawn on top of that with a bitmap font, so
 everything that already printed kept working.
 
-**Programs.** Ring 3, its own address space per process, and seven system calls
-through int 0x80. An ELF32 loader maps each PT_LOAD segment where the file asks
-and refuses anything that would land in kernel memory. `userland/` holds
-programs built entirely separately: the only thing they share with the kernel
-is the syscall numbers.
+**Programs.** Ring 3, its own address space per process, and thirteen system
+calls through int 0x80. An ELF32 loader maps each PT_LOAD segment where the
+file asks and refuses anything that would land in kernel memory. `userland/`
+holds programs built entirely separately: the only thing they share with the
+kernel is the syscall numbers. They are then pasted whole into the kernel
+image, so a fresh install already has something to run. They are deliberately
+never saved to the disk: if they were, the first boot would write them out and
+every later boot would run the written copies, so rebuilding the kernel would
+appear to change nothing.
 
 **Windows.** A compositing window manager: windows are off-screen surfaces,
 the manager owns the chrome, the stacking order and the pointer, and the whole
 screen is assembled into the back buffer and pushed once per frame so a window
 moving over another leaves no trail. Title bars drag, clicking raises, the
-close box closes, and a taskbar shows what is open. `paint` has sixteen
-colours, four brush sizes and fill; strokes are interpolated with Bresenham,
-because the mouse reports in jumps and without it a quick stroke is a row of
-dots.
+close box closes, and a taskbar shows what is open.
+
+**The window server.** A program in ring 3 cannot touch the framebuffer and
+cannot be handed a kernel pointer, so a window's pixels are allocated on a page
+boundary and mapped into the calling process with the user bit set. The program
+draws into that memory directly and asks for a repaint; the kernel keeps the
+window and hands back only a small integer handle, checked against the caller
+on every call. Input travels the other way through a per-window event queue.
+`paint` is an ordinary ELF executable that uses nothing else: sixteen colours,
+four brush sizes, and strokes interpolated with Bresenham, because the mouse
+reports in jumps and without it a quick stroke is a row of dots.
 
 **Drivers.** Framebuffer and VGA text consoles, PS/2 keyboard with
 shift/caps/ctrl, PS/2 mouse with a drawn pointer, PIT at 100 Hz, and a 16550
@@ -146,19 +168,21 @@ character first, so a person can type at it and a script can pipe into it.
 ## testing
 
 The kernel tests itself. `./run.sh -T` boots with selftest on the command line,
-runs 86 checks across every subsystem, then writes to QEMU's debug-exit port so
-the host gets a real exit status.
+runs 104 checks across every subsystem, then writes to QEMU's debug-exit port
+so the host gets a real exit status.
 
-    [string]           8 checks      [network]     7 checks
-    [physical memory]  4 checks      [elf]         7 checks
-    [paging]           4 checks      [userspace]   3 checks
-    [heap]             5 checks      [video]       7 checks
-    [filesystem]       6 checks      [mouse]       1 check
-    [timer]            2 checks      [graphics]   12 checks
-    [interrupts]       2 checks      [windows]     3 checks
-    [disk]             6 checks      [fat]         9 checks
+    [string]           8 checks      [elf]                 7 checks
+    [physical memory]  4 checks      [userspace]           3 checks
+    [paging]           4 checks      [video]               7 checks
+    [heap]             5 checks      [mouse]               1 check
+    [filesystem]       6 checks      [graphics]           12 checks
+    [timer]            2 checks      [windows]             3 checks
+    [interrupts]       2 checks      [window server]      15 checks
+    [disk]             6 checks      [built-in programs]   3 checks
+    [fat]              9 checks
+    [network]          7 checks
 
-    86 passed, 0 failed
+    104 passed, 0 failed
     SELFTEST_PASS
 
 The tests are written to fail for the right reasons. The disk test writes a
@@ -171,8 +195,16 @@ requires each to be refused. The userspace test watches the system call counter
 rather than the task list, because a program can finish before a count is
 taken.
 
-`tools/shell_test.sh` is the other half. It boots the OS, types commands at the
-shell over the serial line, and checks what comes back.
+`tools/shell_test.sh` is the second half. It boots the OS, types commands at
+the shell over the serial line, and checks what comes back, including running a
+program that reports what it can see of its own window from ring 3.
+
+`tools/shotcheck.py` is the third. Neither of the others can prove anything
+reaches the screen, so this one boots headless, opens the desktop, drives the
+real mouse through QEMU's monitor to draw a stroke in paint, takes a real
+screenshot and counts pixels. It caught a bug the other two could not: the
+surface was being mapped one page before the window's pixels, which drew a
+recognisable but wrong toolbar.
 
 ## things that went wrong
 
@@ -214,18 +246,19 @@ large range:
 
 - **No fork or exec in the Unix sense.** A program is loaded and run; it
   cannot start another or replace itself.
-- **Seven system calls.** Enough to print, read a file, sleep and exit.
+- **Thirteen system calls.** Enough to print, read a file, sleep, exit and own
+  a window. A program cannot write a file or open a socket.
 - **Flat filesystem**, no directories, and only 8.3 names.
 - **No shared libraries**, no dynamic linking, no relocation: programs are
   static and loaded at a fixed address.
-- **Graphical programs live in the kernel.** Text programs run in ring 3, but
-  the window manager has no way yet to hand a surface across the privilege
-  boundary, so `paint` is kernel code. That gap is the next real piece of work.
-- **No window resizing**, and eight windows at once.
-- **TCP has no retransmission** and handles one connection at a time. It is
-  correct over a link that does not drop packets, which is what an emulated
-  network is, and would need real work before it faced the open internet
-  directly.
+- **No window resizing**, and eight windows at once. A surface is allocated
+  once, at the size the window was created with.
+- **The `about` window is still kernel code**, because it reports on the
+  allocator, the scheduler and the clock and no system call exposes those.
+  Every other window on the desktop belongs to a ring 3 process.
+- **TCP handles one connection at a time.** It retransmits with exponential
+  backoff and gives up after six tries, but there is no congestion control, no
+  window scaling and no selective acknowledgement.
 - **No TLS**, so `fetch` is plain HTTP only.
 - **Ping only reaches the local network.** ICMP is implemented in both
   directions and pinging the gateway works. QEMU's user mode networking does
@@ -250,11 +283,15 @@ orders of magnitude away from Linux, which is roughly 30 million lines.
     kernel/paging.c    two-level paging
     kernel/heap.c      kmalloc
     kernel/sched.c     preemptive round-robin tasks
+    kernel/blockdev.c  picks a disk driver and hides which one
+    kernel/ahci.c      sata through ahci
     kernel/ata.c       ata pio disk driver
     kernel/diskfs.c    reading and writing the filesystem image
     kernel/fs.c        the filesystem itself
     kernel/pci.c       pci configuration space
-    kernel/rtl8139.c   network card driver
+    kernel/netdev.c    picks a network driver and hides which one
+    kernel/e1000.c     intel e1000 driver
+    kernel/rtl8139.c   rtl8139 driver
     kernel/net.c       ethernet, arp, ip, icmp, udp, dhcp, dns
     kernel/tcp.c       tcp client
     kernel/http.c      http get
@@ -267,7 +304,9 @@ orders of magnitude away from Linux, which is roughly 30 million lines.
     kernel/syscall.c   the system call table
     kernel/user.c      building and launching ring 3 processes
     kernel/wm.c        the window manager
-    kernel/apps.c      paint and the about window
+    kernel/winsrv.c    handing window surfaces across to ring 3
+    kernel/builtin.S   the user programs, pasted into the kernel image
+    kernel/apps.c      the about window
     kernel/gfx.c       drawing into off-screen surfaces
     kernel/vga.c       text console
     kernel/serial.c    16550 uart, interrupt driven

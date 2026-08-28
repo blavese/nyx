@@ -4,7 +4,7 @@
  * inline; there are no sockets and no buffering beyond one frame at a time,
  * which keeps the whole path short enough to follow. */
 #include "net.h"
-#include "rtl8139.h"
+#include "netdev.h"
 #include "timer.h"
 #include "printf.h"
 #include "string.h"
@@ -123,7 +123,7 @@ static void eth_send(const u8 *dst, u16 type, const void *payload, u16 len) {
     memcpy(e->src, my_mac, 6);
     e->type = hs(type);
     memcpy(txbuf + sizeof(eth_t), payload, len);
-    rtl_send(txbuf, (u16)(sizeof(eth_t) + len));
+    netdev_send(txbuf, (u16)(sizeof(eth_t) + len));
 }
 
 static void arp_send(u16 oper, const u8 *target_mac, ipv4_t target_ip) {
@@ -150,7 +150,7 @@ static bool resolve_mac(ipv4_t ip, u8 *out, u32 timeout_ms) {
         arp_send(1, BCAST, ip);
         u64 wait = timer_ticks() + (timer_hz() / 4);
         while (timer_ticks() < wait) {
-            rtl_poll();
+            netdev_poll();
             if (arp_get(ip, out)) return true;
             if (timer_ticks() > deadline) return false;
         }
@@ -326,7 +326,7 @@ void net_receive(const u8 *frame, u16 len) {
     }
 }
 
-void net_poll(void) { rtl_poll(); }
+void net_poll(void) { netdev_poll(); }
 
 /* --- udp ---------------------------------------------------------------- */
 
@@ -392,7 +392,7 @@ static void dhcp_build(dhcp_t *d, u8 type, ipv4_t req_ip, ipv4_t server) {
 }
 
 bool net_dhcp(u32 timeout_ms) {
-    if (!rtl_up()) return false;
+    if (!netdev_up()) return false;
 
     dhcp_xid = 0x4E595800u ^ (u32)timer_ticks();
     dhcp_offer_got = dhcp_ack_got = false;
@@ -424,7 +424,7 @@ bool net_dhcp(u32 timeout_ms) {
 /* --- icmp echo ---------------------------------------------------------- */
 
 int net_ping(ipv4_t dst, u32 timeout_ms) {
-    if (!rtl_up() || !my_ip) return -1;
+    if (!netdev_up() || !my_ip) return -1;
 
     static u16 seq = 0;
     seq++;
@@ -486,7 +486,7 @@ static void handle_dns_reply(const u8 *p, u16 len) {
 }
 
 bool net_resolve(const char *host, ipv4_t *out, u32 timeout_ms) {
-    if (!rtl_up() || !my_dns) return false;
+    if (!netdev_up() || !my_dns) return false;
 
     static u16 next_id = 0x1234;
     dns_id = next_id++;
@@ -562,14 +562,14 @@ void net_init(void) {
     memset(arp_cache, 0, sizeof(arp_cache));
     my_ip = my_mask = my_gw = my_dns = 0;
     bound = false;
-    if (rtl_up()) memcpy(my_mac, rtl_mac(), 6);
+    if (netdev_up()) memcpy(my_mac, netdev_mac(), 6);
 }
 
-bool  net_up(void)        { return rtl_up(); }
+bool  net_up(void)        { return netdev_up(); }
 ipv4_t net_ip(void)       { return my_ip; }
 ipv4_t net_gateway(void)  { return my_gw; }
 ipv4_t net_netmask(void)  { return my_mask; }
 ipv4_t net_dns(void)      { return my_dns; }
 const u8 *net_mac(void)   { return my_mac; }
-u32 net_rx_packets(void)  { return rtl_rx_count(); }
-u32 net_tx_packets(void)  { return rtl_tx_count(); }
+u32 net_rx_packets(void)  { return netdev_rx_count(); }
+u32 net_tx_packets(void)  { return netdev_tx_count(); }

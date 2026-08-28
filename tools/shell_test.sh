@@ -40,8 +40,12 @@ feed() {
   type_line "ps"
   type_line "mem"
   type_line "spawn"
-  type_line "echo done testing"
+  type_line "exec hello.elf"
+  sleep 1.5          # exec prints a lot; let the guest drain first
+  type_line "exec wintest.elf"
   sleep 1.5
+  type_line "echo done testing"
+  sleep 2.5
 }
 
 feed | timeout 90 "$QEMU" -kernel build/nyx.elf -m 64 -no-reboot -display none -serial stdio > "$OUT" 2>&1 || true
@@ -61,6 +65,11 @@ check "no such file"             "cat reports a deleted file as missing"
 check "PID"                      "ps prints the task table"
 check "physical:"                "mem reports physical memory"
 check "spawned pid"              "spawn creates a task"
+check "hello from a program"     "exec runs a built-in ELF in ring 3"
+check "wintest: surface at 0x60" "a ring 3 program is handed a window surface"
+check "wintest: wrote and read back 3072 pixels" "it can write every pixel of it"
+check "closed, handle is dead"  "the handle stops working once closed"
+check "wintest: ok"              "and it cannot reach another program's window"
 check "done testing"             "echo works"
 echo
 if [ $fails -eq 0 ]; then echo "shell test: all checks passed"; else echo "shell test: $fails failed"; fi

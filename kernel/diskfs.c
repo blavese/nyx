@@ -7,16 +7,17 @@
 #include "diskfs.h"
 #include "fat.h"
 #include "ata.h"
+#include "blockdev.h"
 #include "fs.h"
 #include "heap.h"
 #include "printf.h"
 #include "string.h"
 
-bool diskfs_available(void) { return ata_present(); }
+bool diskfs_available(void) { return blk_present(); }
 bool diskfs_mounted(void)   { return fat_mounted(); }
 
 bool diskfs_format(void) {
-    if (!ata_present()) return false;
+    if (!blk_present()) return false;
     return fat_format("NYX");
 }
 
@@ -38,7 +39,8 @@ bool diskfs_sync(void) {
         bool still_here = false;
         for (u32 j = 0; j < fs_count(); j++) {
             file_t *f = fs_at(j);
-            if (f && strcmp(f->name, name) == 0) { still_here = true; break; }
+            if (!f || f->builtin) continue;   /* built-ins do not belong here */
+            if (strcmp(f->name, name) == 0) { still_here = true; break; }
         }
         if (!still_here) strncpy(stale[stale_n++], name, FS_NAME_MAX - 1);
     }
@@ -47,15 +49,19 @@ bool diskfs_sync(void) {
 
     for (u32 i = 0; i < fs_count(); i++) {
         file_t *f = fs_at(i);
-        if (!f) continue;
+        if (!f || f->builtin) continue;
         if (!fat_write_file(f->name, f->data, f->size)) return false;
     }
     return true;
 }
 
 int diskfs_load(void) {
-    if (!ata_present()) return -1;
+    if (!blk_present()) return -1;
     if (!fat_mount()) return -2;        /* not formatted, or not FAT16 */
+
+    /* Recover anything a previous crash left stranded. */
+    u32 stranded = fat_reclaim();
+    if (stranded) kprintf("  fs      reclaimed %d cluster(s) from an unclean shutdown\n", stranded);
 
     fs_begin_load();
     u32 loaded = 0;

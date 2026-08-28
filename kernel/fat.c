@@ -10,6 +10,7 @@
  * Only the root directory is supported. There are no subdirectories. */
 #include "fat.h"
 #include "ata.h"
+#include "blockdev.h"
 #include "heap.h"
 #include "printf.h"
 #include "string.h"
@@ -103,7 +104,7 @@ static void from_83(const u8 in[11], char *out) {
 static u16 fat_get(u32 cluster) {
     u32 off = cluster * 2;
     u32 lba = fat_start + off / SECTOR_SIZE;
-    if (!ata_read(lba, 1, sec)) return EOC;
+    if (!blk_read(lba, 1, sec)) return EOC;
     return *(u16 *)(sec + (off % SECTOR_SIZE));
 }
 
@@ -112,9 +113,9 @@ static bool fat_set(u32 cluster, u16 value) {
     /* Both copies of the table have to agree or other readers will object. */
     for (u32 copy = 0; copy < num_fats; copy++) {
         u32 lba = fat_start + copy * fat_sectors + off / SECTOR_SIZE;
-        if (!ata_read(lba, 1, sec)) return false;
+        if (!blk_read(lba, 1, sec)) return false;
         *(u16 *)(sec + (off % SECTOR_SIZE)) = value;
-        if (!ata_write(lba, 1, sec)) return false;
+        if (!blk_write(lba, 1, sec)) return false;
     }
     return true;
 }
@@ -145,8 +146,8 @@ static u32 cluster_lba(u32 cluster) {
 
 bool fat_mount(void) {
     mounted = false;
-    if (!ata_present()) return false;
-    if (!ata_read(0, 1, sec)) return false;
+    if (!blk_present()) return false;
+    if (!blk_read(0, 1, sec)) return false;
 
     if (sec[510] != 0x55 || sec[511] != 0xAA) return false;
 
@@ -180,9 +181,9 @@ bool fat_mount(void) {
 }
 
 bool fat_format(const char *label) {
-    if (!ata_present()) return false;
+    if (!blk_present()) return false;
 
-    u32 total = ata_sectors();
+    u32 total = blk_sectors();
     if (total < 8192) return false;
 
     u8 spc = 4;                       /* 2 KiB clusters */
@@ -229,26 +230,26 @@ bool fat_format(const char *label) {
     for (u32 i = 0; i < 11 && label && label[i]; i++) sec[43 + i] = (u8)upcase(label[i]);
     memcpy(sec + 54, "FAT16   ", 8);
     sec[510] = 0x55; sec[511] = 0xAA;
-    if (!ata_write(0, 1, sec)) return false;
+    if (!blk_write(0, 1, sec)) return false;
 
     /* both tables, cleared, with the two reserved entries at the front */
     memset(sec, 0, SECTOR_SIZE);
     for (u32 copy = 0; copy < fats; copy++)
         for (u32 s = 0; s < fsize; s++)
-            if (!ata_write(reserved + copy * fsize + s, 1, sec)) return false;
+            if (!blk_write(reserved + copy * fsize + s, 1, sec)) return false;
 
     memset(sec, 0, SECTOR_SIZE);
     *(u16 *)(sec + 0) = 0xFFF8;         /* media descriptor copy */
     *(u16 *)(sec + 2) = 0xFFFF;         /* end of chain marker */
     for (u32 copy = 0; copy < fats; copy++)
-        if (!ata_write(reserved + copy * fsize, 1, sec)) return false;
+        if (!blk_write(reserved + copy * fsize, 1, sec)) return false;
 
     /* empty root directory */
     memset(sec, 0, SECTOR_SIZE);
     for (u32 s = 0; s < root_secs; s++)
-        if (!ata_write(reserved + (u32)fats * fsize + s, 1, sec)) return false;
+        if (!blk_write(reserved + (u32)fats * fsize + s, 1, sec)) return false;
 
-    ata_flush();
+    blk_flush();
     return fat_mount();
 }
 
@@ -257,7 +258,7 @@ bool fat_format(const char *label) {
 static bool root_read(u32 index, dirent_t *out) {
     if (index >= root_entries) return false;
     u32 per = SECTOR_SIZE / 32;
-    if (!ata_read(root_start + index / per, 1, sec)) return false;
+    if (!blk_read(root_start + index / per, 1, sec)) return false;
     memcpy(out, sec + (index % per) * 32, 32);
     return true;
 }
@@ -266,9 +267,9 @@ static bool root_write(u32 index, const dirent_t *in) {
     if (index >= root_entries) return false;
     u32 per = SECTOR_SIZE / 32;
     u32 lba = root_start + index / per;
-    if (!ata_read(lba, 1, sec)) return false;
+    if (!blk_read(lba, 1, sec)) return false;
     memcpy(sec + (index % per) * 32, in, 32);
-    return ata_write(lba, 1, sec);
+    return blk_write(lba, 1, sec);
 }
 
 static int find_entry(const char *name, dirent_t *out) {
@@ -326,7 +327,7 @@ int fat_read_file(const char *name, u8 *buf, u32 cap) {
     while (done < want && cluster >= 2 && cluster < EOC_MIN) {
         u32 lba = cluster_lba(cluster);
         for (u32 s = 0; s < sectors_per_cluster && done < want; s++) {
-            if (!ata_read(lba + s, 1, sec)) return -1;
+            if (!blk_read(lba + s, 1, sec)) return -1;
             u32 n = want - done;
             if (n > SECTOR_SIZE) n = SECTOR_SIZE;
             memcpy(buf + done, sec, n);
@@ -342,9 +343,11 @@ bool fat_write_file(const char *name, const u8 *buf, u32 size) {
 
     dirent_t e;
     int slot = find_entry(name, &e);
+    u32 old_chain = 0;
 
     if (slot >= 0) {
-        if (e.cluster_lo >= 2) free_chain(e.cluster_lo);   /* rewrite in full */
+        /* Remember the old chain but do not touch it yet. */
+        old_chain = e.cluster_lo;
     } else {
         memset(&e, 0, sizeof(e));
         for (u32 i = 0; i < root_entries; i++) {
@@ -352,11 +355,14 @@ bool fat_write_file(const char *name, const u8 *buf, u32 size) {
             if (!root_read(i, &probe)) break;
             if (probe.name[0] == ENT_FREE || probe.name[0] == ENT_DELETED) { slot = (int)i; break; }
         }
-        if (slot < 0) return false;                        /* directory is full */
+        if (slot < 0) return false;
         to_83(name, e.name);
         e.attr = ATTR_ARCHIVE;
     }
 
+    /* Write the new copy first, into clusters nothing points at yet. Losing
+       power during this stage leaves the directory still describing the old
+       file, so the old contents survive intact. */
     u32 first = 0, prev = 0, written = 0;
     u32 per_cluster = fat_cluster_bytes();
 
@@ -376,18 +382,76 @@ bool fat_write_file(const char *name, const u8 *buf, u32 size) {
                 if (n > SECTOR_SIZE) n = SECTOR_SIZE;
                 memcpy(sec, buf + off, n);
             }
-            if (!ata_write(lba + s, 1, sec)) return false;
+            if (!blk_write(lba + s, 1, sec)) { if (first) free_chain(first); return false; }
         }
         written += per_cluster;
     }
 
+    /* Make sure the data is on the platter before anything points at it. */
+    blk_flush();
+
     e.cluster_lo = (u16)first;
     e.cluster_hi = 0;
     e.size = size;
-    e.write_date = 0x5A21;        /* 2025-01-01, we have no clock */
+    e.write_date = 0x5A21;
     e.write_time = 0;
-    if (!root_write((u32)slot, &e)) return false;
-    return ata_flush();
+
+    /* One sector write swings the file from the old chain to the new one.
+       This is the commit: before it the old file is live, after it the new
+       one is, and there is no moment where neither is. */
+    if (!root_write((u32)slot, &e)) { if (first) free_chain(first); return false; }
+    if (!blk_flush()) return false;
+
+    /* Only now is the old chain unreachable and safe to release. A crash
+       before this point leaks clusters, which fat_reclaim recovers; it never
+       loses the file. */
+    if (old_chain >= 2) { free_chain(old_chain); blk_flush(); }
+    return true;
+}
+
+/* Frees clusters that no directory entry refers to.
+ *
+ * A crash between writing a new copy and committing it leaves its clusters
+ * allocated but unreachable. Nothing is corrupt, but the space is gone until
+ * somebody notices, so this runs at mount. */
+u32 fat_reclaim(void) {
+    if (!mounted) return 0;
+
+    u32 total = cluster_count + 2;
+    u8 *reachable = (u8 *)kmalloc(total);
+    if (!reachable) return 0;
+    memset(reachable, 0, total);
+
+    reachable[0] = reachable[1] = 1;          /* the two reserved entries */
+
+    dirent_t e;
+    for (u32 i = 0; i < root_entries; i++) {
+        if (!root_read(i, &e)) break;
+        if (e.name[0] == ENT_FREE) break;
+        if (e.name[0] == ENT_DELETED) continue;
+        if ((e.attr & ATTR_LFN) == ATTR_LFN) continue;
+        if (e.attr & ATTR_VOLUME_ID) continue;
+
+        u32 c = e.cluster_lo;
+        u32 guard = 0;
+        while (c >= 2 && c < EOC_MIN && c < total && guard++ < total) {
+            if (reachable[c]) break;          /* a loop; stop rather than spin */
+            reachable[c] = 1;
+            c = fat_get(c);
+        }
+    }
+
+    u32 freed = 0;
+    for (u32 c = 2; c < total; c++) {
+        if (reachable[c]) continue;
+        if (fat_get(c) == 0) continue;        /* already free */
+        fat_set(c, 0);
+        freed++;
+    }
+    if (freed) blk_flush();
+
+    kfree(reachable);
+    return freed;
 }
 
 bool fat_delete_file(const char *name) {
@@ -398,7 +462,7 @@ bool fat_delete_file(const char *name) {
     if (e.cluster_lo >= 2) free_chain(e.cluster_lo);
     e.name[0] = ENT_DELETED;
     if (!root_write((u32)slot, &e)) return false;
-    return ata_flush();
+    return blk_flush();
 }
 
 u32 fat_free_bytes(void) {

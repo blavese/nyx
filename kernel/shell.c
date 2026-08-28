@@ -11,11 +11,11 @@
 #include "timer.h"
 #include "sched.h"
 #include "fs.h"
-#include "ata.h"
+#include "blockdev.h"
 #include "diskfs.h"
 #include "fat.h"
 #include "net.h"
-#include "rtl8139.h"
+#include "netdev.h"
 #include "http.h"
 #include "mouse.h"
 #include "user.h"
@@ -145,7 +145,15 @@ static void execute(char *buf) {
     else if (!strcmp(c, "guide")) guide_print();
     else if (!strcmp(c, "desktop")) {
         if (!fb_active()) { kprintf("the desktop needs a framebuffer" "\n"); return; }
-        app_paint();
+
+        /* paint is an ordinary ring 3 program. It is started here and then
+           draws on its own, through the window server, while this task runs
+           the compositor. */
+        file_t *pf = fs_find("paint.elf");
+        if (pf) {
+            int rc = user_spawn_elf("paint", pf->data, pf->size);
+            if (rc < 0) kprintf("desktop: paint: %s" "\n", elf_error(rc));
+        }
         app_about();
         wm_run();
         /* the desktop owned the screen; give the console its own back */
@@ -191,9 +199,9 @@ static void execute(char *buf) {
         if (!diskfs_available()) { kprintf("format: no disk attached\n"); return; }
         kprintf(diskfs_format() && diskfs_sync() ? "disk formatted\n" : "format failed\n");
     } else if (!strcmp(c, "disk")) {
-        if (!ata_present()) { kprintf("no disk attached\n"); return; }
-        kprintf("model    %s\n", ata_model());
-        kprintf("size     %d sectors (%d MiB)\n", ata_sectors(), ata_sectors() / 2048);
+        if (!blk_present()) { kprintf("no disk attached\n"); return; }
+        kprintf("model    %s\n", blk_model());
+        kprintf("size     %d sectors (%d MiB)\n", blk_sectors(), blk_sectors() / 2048);
         kprintf("state    %s\n", diskfs_mounted() ? "mounted" : "not mounted");
         if (fat_mounted()) {
             kprintf("format   FAT16, %d clusters of %d bytes\n",

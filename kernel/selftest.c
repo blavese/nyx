@@ -11,7 +11,7 @@
 #include "sched.h"
 #include "syscall.h"
 #include "idt.h"
-#include "ata.h"
+#include "blockdev.h"
 #include "diskfs.h"
 #include "fat.h"
 #include "elf.h"
@@ -20,13 +20,15 @@
 #include "sched.h"
 #include "syscall.h"
 #include "net.h"
-#include "rtl8139.h"
+#include "netdev.h"
 #include "fb.h"
 #include "fbcon.h"
 #include "mouse.h"
 #include "gfx.h"
 #include "wm.h"
 #include "font.h"
+#include "winsrv.h"
+#include "builtin.h"
 
 static int passed, failed;
 
@@ -137,22 +139,22 @@ static void test_interrupts(void) {
 
 
 static void test_disk(void) {
-    if (!ata_present()) { kprintf("  SKIP  no disk attached\n"); return; }
-    ok("disk reports a size", ata_sectors() > 0);
+    if (!blk_present()) { kprintf("  SKIP  no disk attached\n"); return; }
+    ok("disk reports a size", blk_sectors() > 0);
 
     /* Use a sector well past the filesystem so nothing real is disturbed,
        and put back whatever was there. */
-    u32 lba = ata_sectors() - 4;
+    u32 lba = blk_sectors() - 4;
     u8 original[SECTOR_SIZE], probe[SECTOR_SIZE], back[SECTOR_SIZE];
-    ok("read a sector", ata_read(lba, 1, original));
+    ok("read a sector", blk_read(lba, 1, original));
 
     for (u32 i = 0; i < SECTOR_SIZE; i++) probe[i] = (u8)(i * 7 + 3);
-    ok("write a sector", ata_write(lba, 1, probe));
-    ok("read it back", ata_read(lba, 1, back));
+    ok("write a sector", blk_write(lba, 1, probe));
+    ok("read it back", blk_read(lba, 1, back));
     ok("what came back is what went out", memcmp(probe, back, SECTOR_SIZE) == 0);
 
-    ata_write(lba, 1, original);
-    ok("original contents restored", ata_read(lba, 1, back) && memcmp(original, back, SECTOR_SIZE) == 0);
+    blk_write(lba, 1, original);
+    ok("original contents restored", blk_read(lba, 1, back) && memcmp(original, back, SECTOR_SIZE) == 0);
 }
 
 static void test_net(void) {
@@ -205,7 +207,7 @@ static void test_mouse(void) {
 
 
 static void test_fat(void) {
-    if (!ata_present()) { kprintf("  SKIP  no disk attached\n"); return; }
+    if (!blk_present()) { kprintf("  SKIP  no disk attached\n"); return; }
     ok("volume is mounted", fat_mounted());
     ok("cluster count is in the FAT16 range",
        fat_total_clusters() >= 4085 && fat_total_clusters() <= 65524);
@@ -370,6 +372,79 @@ static void test_wm(void) {
     ok("windows can be closed", true);
 }
 
+static void test_winsrv(void) {
+    const u32 PID = 4242, OTHER = 4243;
+
+    int h = winsrv_create(PID, "selftest", 64, 48);
+    ok("a window can be created for a program", h >= 0);
+    if (h < 0) return;
+
+    ok("its size comes back", winsrv_size(PID, h) == ((64 << 16) | 48));
+    ok("another program cannot see the handle", winsrv_size(OTHER, h) == -1);
+
+    u32 ua = winsrv_surface(PID, h, paging_current_directory());
+    ok("the surface maps into the caller", ua == WINSRV_SURFACE_BASE);
+
+    /* Writing through the address the program was given must land in the
+       pixels the window manager composites from. Those pages are identity
+       mapped for the kernel, so the physical address is readable here. */
+    if (ua) {
+        *(volatile u32 *)ua = 0xDEADBEEF;
+        u32 phys = virt_to_phys(ua);
+        ok("it aliases the window pixels", phys && *(volatile u32 *)phys == 0xDEADBEEF);
+
+        /* Pixel zero for the program has to be pixel zero for the window.
+           Mapping the page before it puts every row out by a fixed amount,
+           which draws a recognisable but wrong picture. */
+        window_t *win = winsrv_window(PID, h);
+        ok("and starts exactly where the window does", win && phys == (u32)win->canvas);
+
+        /* The last pixel must be inside the mapping too. */
+        u32 last = ua + (64u * 48u - 1) * 4;
+        *(volatile u32 *)last = 0xFEEDFACE;
+        ok("the whole surface is mapped",
+           win && win->canvas[64 * 48 - 1] == 0xFEEDFACE);
+        ok("asking again returns the same address",
+           winsrv_surface(PID, h, paging_current_directory()) == ua);
+    }
+
+    ok("a foreign program cannot map it", winsrv_surface(OTHER, h, paging_current_directory()) == 0);
+    ok("commit is accepted", winsrv_commit(PID, h));
+    ok("a foreign commit is not", !winsrv_commit(OTHER, h));
+
+    ok("the window closes", winsrv_close(PID, h));
+    ok("the handle is dead afterwards", winsrv_surface(PID, h, paging_current_directory()) == 0);
+
+    /* Everything a task owned goes away with it. */
+    int a = winsrv_create(PID, "one", 40, 40);
+    int b = winsrv_create(PID, "two", 40, 40);
+    ok("a program can hold more than one window", a >= 0 && b >= 0 && a != b);
+    winsrv_release(PID);
+    ok("its windows go when the program does", winsrv_size(PID, a) == -1 && winsrv_size(PID, b) == -1);
+}
+
+static void test_builtin(void) {
+    ok("programs ship with the kernel", builtin_count_programs() >= 3);
+    file_t *f = fs_find("paint.elf");
+    ok("paint is one of them", f && f->size > 1024);
+    ok("and it is a real ELF", f && f->data[0] == 0x7F && f->data[1] == 'E' &&
+                               f->data[2] == 'L' && f->data[3] == 'F');
+    ok("they are marked as coming from the kernel", f && f->builtin);
+
+    /* The disk must not be holding its own copy, or rebuilding the kernel
+       would change nothing on a machine that had already booted once. */
+    if (blk_present() && fat_mounted()) {
+        diskfs_sync();
+        char name[FS_NAME_MAX];
+        bool on_disk = false;
+        for (u32 i = 0; ; i++) {
+            if (fat_list(i, name, 0) != 1) break;
+            if (strcmp(name, "PAINT.ELF") == 0) on_disk = true;
+        }
+        ok("and are not written to the disk", !on_disk);
+    }
+}
+
 int selftest_run(void) {
     passed = failed = 0;
     kprintf("\n=== nyx self test ===\n");
@@ -389,6 +464,8 @@ int selftest_run(void) {
     kprintf("[mouse]\n");      test_mouse();
     kprintf("[graphics]\n");   test_gfx();
     kprintf("[windows]\n");    test_wm();
+    kprintf("[window server]\n"); test_winsrv();
+    kprintf("[built-in programs]\n"); test_builtin();
     kprintf("\n%d passed, %d failed\n", passed, failed);
     kprintf(failed ? "SELFTEST_FAIL\n" : "SELFTEST_PASS\n");
     return failed;

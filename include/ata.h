@@ -1,7 +1,7 @@
 #pragma once
 #include "types.h"
 
-#define SECTOR_SIZE 512
+#include "blockdev.h"   /* SECTOR_SIZE lives with the block layer */
 
 bool ata_init(void);
 bool ata_present(void);

@@ -15,6 +15,10 @@ fi
 [ -z "$ZIG" ] && { echo "zig not found; set ZIG=/path/to/zig" >&2; exit 1; }
 
 mkdir -p build
+
+# The user programs go inside the kernel image, so they are built first.
+ZIG="$ZIG" bash userland/build.sh
+
 SRC=$(find boot kernel -name '*.c' -o -name '*.S' | sort | tr '\n' ' ')
 
 "$ZIG" cc -target x86-freestanding-none -mcpu=i686 \

@@ -7,6 +7,22 @@
 
 typedef struct window window_t;
 
+/* What a window hands to whoever owns it. Fixed layout: a ring 3 program
+   reads these straight out of a buffer the kernel filled in. */
+#define WM_EV_NONE  0
+#define WM_EV_MOUSE 1
+#define WM_EV_KEY   2
+#define WM_EV_CLOSE 3
+
+typedef struct {
+    u32 type;
+    i32 x, y;
+    u32 buttons;
+    u32 key;
+} wm_event_t;
+
+#define WM_EVENT_QUEUE 32
+
 /* Buttons are the raw PS/2 bitmask: bit 0 left, bit 1 right. */
 typedef void (*wm_mouse_fn)(window_t *w, int x, int y, u8 buttons, bool just_pressed);
 typedef void (*wm_key_fn)(window_t *w, char c);
@@ -22,6 +38,12 @@ struct window {
     wm_key_fn   on_key;
     void (*on_close)(window_t *w);   /* lets an app drop its handle */
     void *data;
+
+    /* Events waiting for the program that owns this window. Only used when
+       the owner is outside the kernel; in-kernel windows use the callbacks. */
+    wm_event_t queue[WM_EVENT_QUEUE];
+    u32  q_head, q_tail;
+    bool owned_by_user;
 };
 
 window_t *wm_create(const char *title, int x, int y, int cw, int ch);
@@ -33,6 +55,9 @@ void wm_raise(window_t *w);
 void wm_run(void);
 void wm_quit(void);
 bool wm_active(void);
+
+void wm_push_event(window_t *w, const wm_event_t *ev);
+bool wm_pop_event(window_t *w, wm_event_t *out);
 
 int  wm_outer_w(const window_t *w);
 int  wm_outer_h(const window_t *w);

@@ -160,6 +160,10 @@ bool rtl_init(void) {
 
 void rtl_poll(void) {
     if (!up) return;
-    /* Belt and braces: if an interrupt was missed the ring still drains. */
+    /* Same reentrancy hazard as the e1000: the interrupt handler and this
+       both drain the ring, so they must not overlap. */
+    bool were_on = interrupts_enabled();
+    cli();
     if (!(inb(io_base + REG_CMD) & CMD_BUFE)) handle_rx();
+    if (were_on) sti();
 }

@@ -4,6 +4,7 @@
  * interrupt frame sitting on that stack, so switching tasks is just a matter
  * of telling the interrupt return path to unwind a different one. */
 #include "sched.h"
+#include "winsrv.h"
 #include "heap.h"
 #include "printf.h"
 #include "string.h"
@@ -189,6 +190,9 @@ void task_sleep(u32 ms) {
 }
 
 void task_exit(void) {
+    /* Take back anything the task still holds. A graphical program that
+       crashes must not leave its window on the desktop. */
+    if (current) winsrv_release(current->pid);
     if (current) current->state = TASK_DEAD;
     for (;;) task_yield();
 }

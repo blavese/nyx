@@ -72,6 +72,11 @@ window_t *wm_create(const char *title, int x, int y, int cw, int ch) {
 
 void wm_close(window_t *w) {
     if (!w) return;
+    if (w->owned_by_user) {
+        /* Tell the owner rather than pulling the surface out from under it. */
+        wm_event_t ev = { WM_EV_CLOSE, 0, 0, 0, 0 };
+        wm_push_event(w, &ev);
+    }
     if (w->on_close) w->on_close(w);
     for (int i = 0; i < nwin; i++) {
         if (stack[i] != w) continue;
@@ -95,6 +100,23 @@ void wm_raise(window_t *w) {
         needs_composite = true;
         return;
     }
+}
+
+/* --- events for programs outside the kernel ----------------------------- */
+
+void wm_push_event(window_t *w, const wm_event_t *ev) {
+    if (!w) return;
+    u32 next = (w->q_head + 1) % WM_EVENT_QUEUE;
+    if (next == w->q_tail) return;          /* full: drop the oldest news */
+    w->queue[w->q_head] = *ev;
+    w->q_head = next;
+}
+
+bool wm_pop_event(window_t *w, wm_event_t *out) {
+    if (!w || w->q_head == w->q_tail) return false;
+    *out = w->queue[w->q_tail];
+    w->q_tail = (w->q_tail + 1) % WM_EVENT_QUEUE;
+    return true;
 }
 
 /* --- compositing -------------------------------------------------------- */
@@ -222,7 +244,19 @@ static void handle_mouse(int mx, int my, u8 buttons) {
     bool pressed_now = (buttons & 1) && !(last_buttons & 1);
     bool released    = !(buttons & 1) && (last_buttons & 1);
 
-    if (released) { dragging = 0; mouse_capture = 0; }
+    if (released) {
+        /* Hand the release to whoever was being drawn in, before dropping
+           the capture: a program needs to know a stroke ended. */
+        if (mouse_capture && mouse_capture->owned_by_user) {
+            window_t *w = mouse_capture;
+            wm_event_t ev = { WM_EV_MOUSE,
+                              mx - (w->x + WM_BORDER),
+                              my - (w->y + WM_TITLE_H), 0, 0 };
+            wm_push_event(w, &ev);
+        }
+        dragging = 0;
+        mouse_capture = 0;
+    }
 
     if (dragging) {
         dragging->x = mx - drag_off_x;
@@ -240,8 +274,13 @@ static void handle_mouse(int mx, int my, u8 buttons) {
        movement, even if the pointer strays outside. */
     if (mouse_capture) {
         window_t *w = mouse_capture;
-        if (w->on_mouse)
-            w->on_mouse(w, mx - (w->x + WM_BORDER), my - (w->y + WM_TITLE_H), buttons, false);
+        int lx = mx - (w->x + WM_BORDER), ly = my - (w->y + WM_TITLE_H);
+        if (w->owned_by_user) {
+            wm_event_t ev = { WM_EV_MOUSE, lx, ly, buttons, 0 };
+            wm_push_event(w, &ev);
+        } else if (w->on_mouse) {
+            w->on_mouse(w, lx, ly, buttons, false);
+        }
         return;
     }
 
@@ -263,8 +302,15 @@ static void handle_mouse(int mx, int my, u8 buttons) {
     }
 
     mouse_capture = w;
-    if (w->on_mouse)
-        w->on_mouse(w, mx - (w->x + WM_BORDER), my - (w->y + WM_TITLE_H), buttons, true);
+    {
+        int lx = mx - (w->x + WM_BORDER), ly = my - (w->y + WM_TITLE_H);
+        if (w->owned_by_user) {
+            wm_event_t ev = { WM_EV_MOUSE, lx, ly, buttons | 0x80, 0 };
+            wm_push_event(w, &ev);          /* 0x80 marks the initial press */
+        } else if (w->on_mouse) {
+            w->on_mouse(w, lx, ly, buttons, true);
+        }
+    }
 }
 
 void wm_quit(void) { running = false; }
@@ -294,8 +340,15 @@ void wm_run(void) {
 
         int c = kbd_trygetchar();
         if (c == 27) break;                        /* escape leaves */
-        if (c >= 0 && nwin > 0 && stack[nwin - 1]->on_key)
-            stack[nwin - 1]->on_key(stack[nwin - 1], (char)c);
+        if (c >= 0 && nwin > 0) {
+            window_t *top = stack[nwin - 1];
+            if (top->owned_by_user) {
+                wm_event_t ev = { WM_EV_KEY, 0, 0, 0, (u32)c };
+                wm_push_event(top, &ev);
+            } else if (top->on_key) {
+                top->on_key(top, (char)c);
+            }
+        }
 
         for (int i = 0; i < nwin; i++)
             if (stack[i]->dirty) needs_composite = true;

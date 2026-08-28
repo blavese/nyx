@@ -24,6 +24,12 @@ static inline u32 inl(u16 port) {
 
 static inline void io_wait(void) { outb(0x80, 0); }
 
+static inline bool interrupts_enabled(void) {
+    u32 flags;
+    __asm__ volatile ("pushf; pop %0" : "=r"(flags));
+    return (flags & 0x200) != 0;
+}
+
 static inline void cli(void) { __asm__ volatile ("cli"); }
 static inline void sti(void) { __asm__ volatile ("sti"); }
 static inline void hlt(void) { __asm__ volatile ("hlt"); }

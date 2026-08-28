@@ -13,16 +13,18 @@
 #include "heap.h"
 #include "sched.h"
 #include "fs.h"
-#include "ata.h"
+#include "blockdev.h"
 #include "diskfs.h"
 #include "pci.h"
-#include "rtl8139.h"
+#include "netdev.h"
 #include "net.h"
 #include "fb.h"
 #include "fbcon.h"
 #include "mouse.h"
 #include "syscall.h"
 #include "shell.h"
+#include "winsrv.h"
+#include "builtin.h"
 #include "selftest.h"
 #include "string.h"
 #include "io.h"
@@ -104,8 +106,8 @@ void kmain(u32 magic, u32 mbi_addr) {
         kprintf("  video   no vbe, vga text mode\n");
     }
     fs_init();
-    if (ata_init()) {
-        kprintf("  disk    %s, %d MiB\n", ata_model(), ata_sectors() / 2048);
+    if (blk_init()) {
+        kprintf("  disk    %s via %s, %d MiB\n", blk_model(), blk_driver(), blk_sectors() / 2048);
         int n = diskfs_load();
         if (n >= 0)      kprintf("  fs      %d file(s) restored from disk\n", n);
         else if (n == -2) {
@@ -118,12 +120,16 @@ void kmain(u32 magic, u32 mbi_addr) {
     } else {
         kprintf("  disk    none, files will not persist\n");
     }
+    /* After the disk, so a program the user replaced is not overwritten. */
+    builtin_install();
+    kprintf("  progs   %d built in\n", builtin_count_programs());
+
     timer_init(100); kprintf("  timer   100 Hz\n");
-    if (rtl_init()) {
+    if (netdev_init()) {
         net_init();
         const u8 *m = net_mac();
-        kprintf("  net     rtl8139 %02x:%02x:%02x:%02x:%02x:%02x\n",
-                m[0], m[1], m[2], m[3], m[4], m[5]);
+        kprintf("  net     %s %02x:%02x:%02x:%02x:%02x:%02x\n",
+                netdev_name(), m[0], m[1], m[2], m[3], m[4], m[5]);
     } else {
         kprintf("  net     no card found\n");
     }
@@ -134,6 +140,7 @@ void kmain(u32 magic, u32 mbi_addr) {
     kprintf("  input   ps/2 keyboard + serial (irq driven)\n");
 
     syscall_init();
+    winsrv_init();
     sched_init();
     if (want_selftest) task_create("selftest", selftest_task);
     else               task_create("init", init_task);

@@ -1,0 +1,39 @@
+/* The programs that ship inside the kernel image.
+ *
+ * These are ordinary ELF executables built by userland/build.sh, pasted in
+ * here whole. Nothing about them is special: the kernel loads them through
+ * the same ELF loader that reads a program off the disk. Shipping them this
+ * way just means a fresh install has something to run before anyone has put
+ * a file on a disk.
+ *
+ * The paths are relative to the repository root, which is where build.sh
+ * runs the compiler from. */
+.section .rodata
+.balign 4
+
+.global builtin_hello_start
+.global builtin_hello_end
+builtin_hello_start:
+.incbin "build/user/hello.elf"
+builtin_hello_end:
+
+.balign 4
+.global builtin_count_start
+.global builtin_count_end
+builtin_count_start:
+.incbin "build/user/count.elf"
+builtin_count_end:
+
+.balign 4
+.global builtin_wintest_start
+.global builtin_wintest_end
+builtin_wintest_start:
+.incbin "build/user/wintest.elf"
+builtin_wintest_end:
+
+.balign 4
+.global builtin_paint_start
+.global builtin_paint_end
+builtin_paint_start:
+.incbin "build/user/paint.elf"
+builtin_paint_end:

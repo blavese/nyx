@@ -16,3 +16,8 @@ bool fat_delete_file(const char *name);
 u32  fat_total_clusters(void);
 u32  fat_cluster_bytes(void);
 u32  fat_free_bytes(void);
+
+/* Releases clusters no directory entry points at, which is what a crash
+   between writing a file and committing it leaves behind. Returns the
+   number recovered. */
+u32  fat_reclaim(void);

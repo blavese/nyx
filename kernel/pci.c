@@ -65,6 +65,32 @@ bool pci_find(u16 vendor, u16 device, pci_dev_t *out) {
     return false;
 }
 
+bool pci_find_class(u8 class_code, u8 subclass, u8 prog_if, pci_dev_t *out) {
+    for (u16 bus = 0; bus < 256; bus++) {
+        for (u8 slot = 0; slot < 32; slot++) {
+            for (u8 func = 0; func < 8; func++) {
+                u32 id = pci_read32((u8)bus, slot, func, 0x00);
+                if ((u16)(id & 0xFFFF) == 0xFFFF) continue;
+
+                u32 cls = pci_read32((u8)bus, slot, func, 0x08);
+                if ((u8)(cls >> 24) != class_code) continue;
+                if ((u8)(cls >> 16) != subclass) continue;
+                if ((u8)(cls >> 8) != prog_if) continue;
+
+                out->bus = (u8)bus;
+                out->slot = slot;
+                out->func = func;
+                out->vendor = (u16)(id & 0xFFFF);
+                out->device = (u16)(id >> 16);
+                out->bar0 = pci_read32((u8)bus, slot, func, 0x10);
+                out->irq  = (u8)(pci_read32((u8)bus, slot, func, 0x3C) & 0xFF);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void pci_enable_bus_master(const pci_dev_t *d) {
     u16 cmd = pci_read16(d->bus, d->slot, d->func, 0x04);
     cmd |= (1 << 0)    /* respond to I/O space */

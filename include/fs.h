@@ -10,6 +10,7 @@ typedef struct {
     u32  size;
     u32  cap;
     bool used;
+    bool builtin;      /* came from the kernel image, so it is never saved */
 } file_t;
 
 void    fs_init(void);
