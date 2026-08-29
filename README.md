@@ -168,22 +168,22 @@ character first, so a person can type at it and a script can pipe into it.
 ## testing
 
 The kernel tests itself. `./run.sh -T` boots with selftest on the command line,
-runs 110 checks across every subsystem, then writes to QEMU's debug-exit port
+runs 114 checks across every subsystem, then writes to QEMU's debug-exit port
 so the host gets a real exit status.
 
     [string]           8 checks      [elf]                 7 checks
-    [physical memory]  4 checks      [userspace]           3 checks
+    [physical memory]  4 checks      [userspace]           4 checks
     [paging]           4 checks      [video]               7 checks
     [user access]      5 checks      [mouse]               1 check
-    [heap]             5 checks      [graphics]           12 checks
+    [heap]             5 checks      [graphics]           13 checks
     [filesystem]       6 checks      [windows]             3 checks
     [timer]            2 checks      [window server]      16 checks
-    [interrupts]       2 checks      [built-in programs]   3 checks
+    [interrupts]       2 checks      [built-in programs]   5 checks
     [disk]             6 checks
     [fat]              9 checks
     [network]          7 checks
 
-    110 passed, 0 failed
+    114 passed, 0 failed
     SELFTEST_PASS
 
 The tests are written to fail for the right reasons. The disk test writes a

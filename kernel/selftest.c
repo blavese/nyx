@@ -332,6 +332,7 @@ static void test_userspace(void) {
        moving is direct evidence that ring 3 code ran and crossed back in.
        Counting tasks would race: it can finish before the check. */
     u32 before = syscall_count();
+    u32 free_before = pmm_free_frames();
     int pid = user_spawn_stub("selftest-ring3");
     ok("a ring 3 task can be created", pid > 0);
     if (pid <= 0) return;
@@ -339,6 +340,7 @@ static void test_userspace(void) {
     task_wait((u32)pid);
     ok("it reached exit on its own", !task_alive((u32)pid));
     ok("ring 3 code issued system calls", syscall_count() >= before + 7);
+    ok("its address space was reclaimed", pmm_free_frames() == free_before);
 }
 
 
@@ -380,6 +382,8 @@ static void test_gfx(void) {
     char buf[32];
     kformat(buf, sizeof(buf), "%d/%s/%x", 42, "ok", 255);
     ok("kformat formats", strcmp(buf, "42/ok/ff") == 0);
+    kformat(buf, sizeof(buf), "%-4s/%-3d", "x", 7);
+    ok("kformat left aligns", strcmp(buf, "x   /7  ") == 0);
     kformat(buf, 6, "abcdefghij");
     ok("kformat respects the buffer size", strlen(buf) == 5);
 
