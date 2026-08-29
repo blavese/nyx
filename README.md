@@ -168,21 +168,22 @@ character first, so a person can type at it and a script can pipe into it.
 ## testing
 
 The kernel tests itself. `./run.sh -T` boots with selftest on the command line,
-runs 104 checks across every subsystem, then writes to QEMU's debug-exit port
+runs 110 checks across every subsystem, then writes to QEMU's debug-exit port
 so the host gets a real exit status.
 
     [string]           8 checks      [elf]                 7 checks
     [physical memory]  4 checks      [userspace]           3 checks
     [paging]           4 checks      [video]               7 checks
-    [heap]             5 checks      [mouse]               1 check
-    [filesystem]       6 checks      [graphics]           12 checks
-    [timer]            2 checks      [windows]             3 checks
-    [interrupts]       2 checks      [window server]      15 checks
-    [disk]             6 checks      [built-in programs]   3 checks
+    [user access]      5 checks      [mouse]               1 check
+    [heap]             5 checks      [graphics]           12 checks
+    [filesystem]       6 checks      [windows]             3 checks
+    [timer]            2 checks      [window server]      16 checks
+    [interrupts]       2 checks      [built-in programs]   3 checks
+    [disk]             6 checks
     [fat]              9 checks
     [network]          7 checks
 
-    104 passed, 0 failed
+    110 passed, 0 failed
     SELFTEST_PASS
 
 The tests are written to fail for the right reasons. The disk test writes a
@@ -191,9 +192,11 @@ test writes a file spanning several clusters, so it exercises chain following
 rather than a single sector. The network test performs a real DHCP handshake,
 pings the gateway and resolves a live hostname. The ELF test feeds the loader
 six malformed images, including one asking to be mapped over the kernel, and
-requires each to be refused. The userspace test watches the system call counter
-rather than the task list, because a program can finish before a count is
-taken.
+requires each to be refused. The user access test maps a kernel page and a user
+page into the same page table and requires the kernel one to stay out of reach,
+because that is the distinction a system call has to make about a pointer it is
+handed. The userspace test watches the system call counter rather than the task
+list, because a program can finish before a count is taken.
 
 `tools/shell_test.sh` is the second half. It boots the OS, types commands at
 the shell over the serial line, and checks what comes back, including running a

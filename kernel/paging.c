@@ -79,10 +79,13 @@ void paging_free_directory(u32 dir_phys) {
     u32 *dir = (u32 *)dir_phys;
 
     /* Only release tables this space owns. Anything the kernel also has is
-       shared and must survive. */
+       shared and must survive. Compare the table address alone: a user
+       mapping in the same 4 MiB region widens the entry's user bit, and a
+       flag this space set does not make the kernel's table its own. */
     for (u32 i = 0; i < 1024; i++) {
         if (!(dir[i] & PTE_PRESENT)) continue;
-        if (dir[i] == kernel_directory[i]) continue;
+        if ((kernel_directory[i] & PTE_PRESENT) &&
+            (dir[i] & ~0xFFFu) == (kernel_directory[i] & ~0xFFFu)) continue;
         u32 table = dir[i] & ~0xFFFu;
         u32 *t = (u32 *)table;
         for (u32 j = 0; j < 1024; j++)
@@ -111,6 +114,18 @@ u32 virt_to_phys_in(u32 dir_phys, u32 virt) {
     return (e & ~0xFFFu) | (virt & 0xFFF);
 }
 
+/* Checks both levels. A page table shared with the kernel can carry the user
+   bit on its directory entry while the individual kernel pages inside it do
+   not, so the entry alone does not answer the question. */
+bool virt_is_user_in(u32 dir_phys, u32 virt) {
+    if (!dir_phys) return false;
+    u32 *dir = (u32 *)dir_phys;
+    u32 pde = dir[virt >> 22];
+    if (!(pde & PTE_PRESENT) || !(pde & PTE_USER)) return false;
+    u32 pte = ((u32 *)(pde & ~0xFFFu))[(virt >> 12) & 0x3FF];
+    return (pte & PTE_PRESENT) && (pte & PTE_USER);
+}
+
 u32 virt_to_phys(u32 virt) {
     u32 *t = table_for_dir(current_directory, virt, false, 0);
     if (!t) return 0;
@@ -136,8 +151,8 @@ void paging_init(void) {
     current_directory = kernel_directory;
     memset(kernel_directory, 0, PAGE_SIZE);
 
-    /* Identity map the low IDENTITY_MB so kernel code, the frame bitmap and
-       the heap all keep the addresses they already have. */
+    /* Identity map the low KERNEL_SPACE_MB so kernel code, the frame bitmap
+       and the heap all keep the addresses they already have. */
     for (u32 a = 0; a < KERNEL_SPACE_MB * 1024u * 1024u; a += PAGE_SIZE) {
         if (!map_page(a, a, PTE_PRESENT | PTE_RW))
             panic("paging: identity map failed at %p", (void *)a);

@@ -118,6 +118,7 @@ static u16 checksum(const void *data, u32 len, u32 start) {
 static u8 txbuf[1600];
 
 static void eth_send(const u8 *dst, u16 type, const void *payload, u16 len) {
+    if ((u32)sizeof(eth_t) + len > sizeof(txbuf)) return;
     eth_t *e = (eth_t *)txbuf;
     memcpy(e->dst, dst, 6);
     memcpy(e->src, my_mac, 6);
@@ -162,10 +163,14 @@ static bool resolve_mac(ipv4_t ip, u8 *out, u32 timeout_ms) {
 static u16 ip_id = 1;
 
 static bool ip_send(ipv4_t dst, u8 proto, const void *payload, u16 len) {
+    u8 pkt[1500];
+    /* Checked before the ARP, so an oversized payload costs nothing and can
+       never be copied past the end of the staging buffer. */
+    if ((u32)sizeof(ip_t) + len > sizeof(pkt)) return false;
+
     u8 mac[6];
     if (!resolve_mac(dst, mac, 2000)) return false;
 
-    u8 pkt[1500];
     ip_t *ip = (ip_t *)pkt;
     ip->ver_ihl = 0x45;
     ip->tos = 0;
@@ -195,7 +200,6 @@ bool np_ip_send(ipv4_t dst, u8 proto, const void *payload, u16 len) {
 
 static volatile bool  ping_got;
 static volatile u16   ping_seq;
-static volatile u64   ping_at;
 
 static volatile bool  dhcp_offer_got, dhcp_ack_got;
 static volatile ipv4_t dhcp_offer_ip, dhcp_server_ip;
@@ -222,7 +226,7 @@ static void handle_icmp(const ip_t *ip, const u8 *p, u16 len) {
     const icmp_t *ic = (const icmp_t *)p;
 
     if (ic->type == 8) {                     /* echo request: answer it */
-        u8 reply[1500];
+        u8 reply[1500 - sizeof(ip_t)];
         if (len > sizeof(reply)) return;
         memcpy(reply, p, len);
         icmp_t *r = (icmp_t *)reply;
@@ -439,7 +443,6 @@ int net_ping(ipv4_t dst, u32 timeout_ms) {
     ic->csum = hs(checksum(buf, sizeof(buf), 0));
 
     u64 start = timer_ticks();
-    ping_at = start;
     if (!ip_send(dst, IP_ICMP, buf, sizeof(buf))) return -1;
 
     u64 deadline = start + (timeout_ms * timer_hz()) / 1000u;

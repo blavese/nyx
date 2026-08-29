@@ -86,7 +86,11 @@ void wm_close(window_t *w) {
     }
     if (dragging == w) dragging = 0;
     if (mouse_capture == w) mouse_capture = 0;
-    if (w->canvas) kfree(w->canvas);
+    /* A surface the window server handed out is not ours to release: it was
+       carved page aligned out of a larger allocation, so this pointer is not
+       one kmalloc returned, and the server frees the real one when the owning
+       program drops its handle. */
+    if (w->canvas && !w->owned_by_user) kfree(w->canvas);
     kfree(w);
     needs_composite = true;
 }
@@ -107,7 +111,7 @@ void wm_raise(window_t *w) {
 void wm_push_event(window_t *w, const wm_event_t *ev) {
     if (!w) return;
     u32 next = (w->q_head + 1) % WM_EVENT_QUEUE;
-    if (next == w->q_tail) return;          /* full: drop the oldest news */
+    if (next == w->q_tail) return;          /* full: drop this one, keep the backlog */
     w->queue[w->q_head] = *ev;
     w->q_head = next;
 }

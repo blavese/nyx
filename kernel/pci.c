@@ -94,6 +94,7 @@ bool pci_find_class(u8 class_code, u8 subclass, u8 prog_if, pci_dev_t *out) {
 void pci_enable_bus_master(const pci_dev_t *d) {
     u16 cmd = pci_read16(d->bus, d->slot, d->func, 0x04);
     cmd |= (1 << 0)    /* respond to I/O space */
+         | (1 << 1)    /* respond to memory space */
          | (1 << 2);   /* allow it to drive the bus */
     pci_write16(d->bus, d->slot, d->func, 0x04, cmd);
 }
