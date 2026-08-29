@@ -1,12 +1,16 @@
-"""Boots nyx headless, opens the desktop, draws in paint, and looks at the screen.
+"""Boots nyx headless, uses the desktop, and looks at the screen.
 
 The self test can prove the window server hands out a surface, but not that
 anything reaches the display or that input comes back. This drives QEMU's
 monitor to move the real mouse and to grab the real screen.
 
-paint is a ring 3 program, so a stroke appearing on screen means the whole
-path worked: window manager, event queue, int 0x80, a program outside the
-kernel writing its own pixels, and the compositor picking them up.
+Everything it checks crosses a boundary the other tests cannot:
+
+  - the terminal is a ring 3 program, so its window appearing at all means
+    the window server, the compositor and the event queue all worked
+  - the launcher opens Settings, another ring 3 program
+  - clicking an accent in Settings writes a file, and the kernel's window
+    manager re-reads it, so the desktop behind changes colour
 
   python tools/shotcheck.py [--keep]
 """
@@ -17,7 +21,8 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SHOT = os.path.join(ROOT, "build", "desktop.ppm")
+BUILD = os.path.join(ROOT, "build")
+DISK = os.path.join(ROOT, "shotcheck.img")
 MONITOR_PORT = 55731
 
 QEMU = os.environ.get("QEMU") or "C:/Program Files/qemu/qemu-system-i386.exe"
@@ -25,16 +30,13 @@ if not os.path.exists(QEMU):
     from shutil import which
     QEMU = which("qemu-system-i386") or QEMU
 
-# paint opens at 40,40 with a 640x420 content area, a 24 pixel title bar and a
-# 58 pixel toolbar, so its canvas is this rectangle of the screen.
-CANVAS = (60, 140, 660, 470)          # left, top, right, bottom
+TEAL = (0x2C, 0xC7, 0xA0)
+INDIGO = (0x6E, 0x8A, 0xE8)
 
-PAPER = (0xF2, 0xF5, 0xF7)
-RED = (0xC7, 0x4A, 0x3C)
-
-# Where to press, then the drag from there. Screen coordinates.
-STROKE_START = (300, 300)
-STROKE = [(120, 40), (40, 90), (-90, 30)]
+# Where things are on a 1024x768 screen with the default layout.
+BADGE = (40, 745)             # the taskbar launcher
+MENU_SETTINGS = (60, 615)     # third entry of the launcher menu
+SWATCH_INDIGO = (160, 160)    # second accent in the settings window
 
 
 class Monitor:
@@ -53,6 +55,27 @@ class Monitor:
             return self.s.recv(65536).decode("utf-8", "replace")
         except socket.timeout:
             return ""
+
+    def move_to(self, x, y):
+        """The PS/2 pointer is relative and one large jump gets clamped, so
+        walk it into the corner and step out from there."""
+        for _ in range(12):
+            self.send("mouse_move -200 -200", settle=0.05)
+        self.send("mouse_move %d %d" % (x, y), settle=0.35)
+
+    def click(self, x, y):
+        self.move_to(x, y)
+        self.send("mouse_button 1", settle=0.25)
+        self.send("mouse_button 0", settle=0.6)
+
+    def screen(self, name):
+        ppm = os.path.join(BUILD, name + ".ppm")
+        if os.path.exists(ppm):
+            os.remove(ppm)
+        self.send("screendump %s" % ppm.replace("\\", "/"), settle=2.5)
+        if not os.path.exists(ppm):
+            raise RuntimeError("no screenshot from the monitor")
+        return read_ppm(ppm) + (ppm,)
 
     def close(self):
         self.s.close()
@@ -80,6 +103,13 @@ def read_ppm(path):
     return w, h, data[pos:pos + w * h * 3]
 
 
+def tally(px):
+    counts = {}
+    for i in range(0, len(px), 3):
+        counts[px[i:i + 3]] = counts.get(px[i:i + 3], 0) + 1
+    return counts
+
+
 def count_in(px, w, rect, rgb):
     left, top, right, bottom = rect
     want = bytes(rgb)
@@ -94,20 +124,26 @@ def count_in(px, w, rect, rgb):
 
 
 def main():
-    kernel = os.path.join(ROOT, "build", "nyx.elf")
     subprocess.run(["bash", "build.sh"], cwd=ROOT, check=True,
                    stdout=subprocess.DEVNULL)
 
-    if os.path.exists(SHOT):
-        os.remove(SHOT)
+    # A fresh disk every run, so a config left by a previous one cannot make
+    # the accent test pass before it has done anything.
+    if os.path.exists(DISK):
+        os.remove(DISK)
+    with open(DISK, "wb") as f:
+        f.truncate(32 * 1024 * 1024)
 
-    cmd = [
-        QEMU, "-kernel", kernel, "-m", "64", "-no-reboot", "-display", "none",
-        "-serial", "stdio",
-        "-monitor", "tcp:127.0.0.1:%d,server,nowait" % MONITOR_PORT,
-    ]
-    proc = subprocess.Popen(cmd, cwd=ROOT, stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(
+        [QEMU, "-kernel", os.path.join(BUILD, "nyx.elf"), "-m", "64",
+         "-no-reboot", "-display", "none", "-serial", "stdio",
+         "-drive", "file=%s,format=raw,if=ide,index=0" % DISK,
+         "-monitor", "tcp:127.0.0.1:%d,server,nowait" % MONITOR_PORT],
+        cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT)
+
+    shots = []
+    checks = []
 
     try:
         time.sleep(4.5)                        # let it boot
@@ -115,28 +151,61 @@ def main():
             proc.stdin.write(ch.encode())
             proc.stdin.flush()
             time.sleep(0.05)
-        time.sleep(4.0)                        # paint starts and draws
+        time.sleep(5.0)                        # the terminal starts and draws
 
         mon = Monitor(MONITOR_PORT)
+        mon.move_to(*BADGE)
 
-        # The pointer is relative, so walk it into the corner for a known
-        # starting point. One large jump gets clamped by the PS/2 model.
-        for _ in range(12):
-            mon.send("mouse_move -200 -200", settle=0.08)
+        w, h, px, ppm = mon.screen("desktop")
+        shots.append(ppm)
+        counts = tally(px)
+        checks += [
+            ("the screen is the mode that was asked for", (w, h) == (1024, 768)),
+            ("a ring 3 terminal drew its window", counts.get(bytes(TEAL), 0) > 3000),
+            ("the terminal has a dark page to type on",
+             count_in(px, w, (120, 120, 700, 480), (0x10, 0x14, 0x1A)) > 100000),
+        ]
 
-        mon.send("mouse_move %d %d" % STROKE_START, settle=0.5)
-        mon.send("mouse_button 1", settle=0.4)
-        for dx, dy in STROKE:
-            mon.send("mouse_move %d %d" % (dx, dy), settle=0.35)
-        mon.send("mouse_button 0", settle=0.5)
-        time.sleep(1.5)
+        mon.click(*BADGE)
+        time.sleep(0.6)
+        w, h, px, ppm = mon.screen("launcher")
+        shots.append(ppm)
+        # the menu is a panel one shade lighter than the window chrome,
+        # sitting over the wallpaper in the lower left
+        menu_pixels = count_in(px, w, (10, 540, 210, 730), (0x1F, 0x27, 0x2F))
+        checks.append(("the launcher menu opens", menu_pixels > 8000))
 
-        out = mon.send("screendump %s" % SHOT.replace("\\", "/"), settle=2.5)
+        mon.click(*MENU_SETTINGS)
+        time.sleep(3.0)
+        w, h, px, ppm = mon.screen("settings")
+        shots.append(ppm)
+        counts = tally(px)
+        checks += [
+            ("it launches settings, another ring 3 program",
+             counts.get(bytes(INDIGO), 0) > 500),
+            ("whose accent swatches are all on screen",
+             all(counts.get(bytes(c), 0) > 200 for c in
+                 [TEAL, INDIGO, (0xE0, 0xA0, 0x3C), (0xE0, 0x6A, 0x8C),
+                  (0x8A, 0x9B, 0xB0), (0x9A, 0xD1, 0x4A)])),
+        ]
+        teal_before = counts.get(bytes(TEAL), 0)
+        indigo_before = counts.get(bytes(INDIGO), 0)
+
+        mon.click(*SWATCH_INDIGO)
+        time.sleep(2.5)
+        w, h, px, ppm = mon.screen("recoloured")
+        shots.append(ppm)
+        counts = tally(px)
+        # The two accents should have traded places: what was teal chrome is
+        # now indigo chrome, and only the one swatch of each remains.
+        checks += [
+            ("choosing an accent repaints the window manager",
+             counts.get(bytes(INDIGO), 0) > indigo_before * 4),
+            ("and the old accent is gone from the chrome",
+             counts.get(bytes(TEAL), 0) < teal_before / 4),
+        ]
+
         mon.close()
-        if not os.path.exists(SHOT):
-            print("no screenshot was produced")
-            print(out)
-            return 1
     finally:
         try:
             proc.stdin.close()
@@ -145,47 +214,26 @@ def main():
         proc.kill()
         proc.wait(timeout=10)
 
-    w, h, px = read_ppm(SHOT)
-    print("screen %dx%d" % (w, h))
-
-    counts = {}
-    for i in range(0, len(px), 3):
-        counts[px[i:i + 3]] = counts.get(px[i:i + 3], 0) + 1
-
-    def seen(rgb, at_least=1):
-        return counts.get(bytes(rgb), 0) >= at_least
-
-    ink = count_in(px, w, CANVAS, RED)
-    paper = count_in(px, w, CANVAS, PAPER)
-
-    checks = [
-        # paint fills its canvas with paper white before anything else
-        ("paint's canvas is on screen",     seen(PAPER, 20000)),
-        # palette swatches, drawn by the ring 3 program
-        ("its red swatch is on screen",     seen(RED, 100)),
-        ("its green swatch is on screen",   seen((0x2E, 0x9E, 0x5B), 300)),
-        ("its purple swatch is on screen",  seen((0x8E, 0x6B, 0xE0), 300)),
-        # the toolbar the program drew, and the chrome the kernel drew round it
-        ("its toolbar is on screen",        seen((0x22, 0x29, 0x31), 5000)),
-        ("the window has a title bar",      seen((0x2C, 0x7A, 0x6B), 500)),
-        ("the desktop is behind it",        seen((0x1B, 0x22, 0x2A), 50000)),
-        # and the part that needs input to have made it all the way across
-        ("the canvas started out blank",    paper > 100000),
-        ("a mouse stroke painted on it",    ink > 400),
-    ]
-
     failed = 0
+    print("=== desktop check ===")
     for name, good in checks:
         print("  %s  %s" % ("PASS" if good else "FAIL", name))
         if not good:
             failed += 1
 
-    print("canvas: %d painted pixels, %d still blank" % (ink, paper))
-
-    if "--keep" not in sys.argv:
-        os.remove(SHOT)
-    else:
-        print("screenshot kept at %s" % SHOT)
+    if "--keep" in sys.argv:
+        try:
+            from PIL import Image
+            for ppm in shots:
+                Image.open(ppm).save(ppm[:-4] + ".png")
+                print("kept %s" % (ppm[:-4] + ".png"))
+        except ImportError:
+            print("kept the ppm files; install pillow for png")
+    for ppm in shots:
+        if os.path.exists(ppm):
+            os.remove(ppm)
+    if os.path.exists(DISK):
+        os.remove(DISK)
 
     print("\ndesktop check: %s" %
           ("all checks passed" if not failed else "%d failed" % failed))

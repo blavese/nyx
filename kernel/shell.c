@@ -184,17 +184,17 @@ static void execute(char *buf) {
     else if (!strcmp(c, "desktop")) {
         if (!fb_active()) { kprintf("the desktop needs a framebuffer" "\n"); return; }
 
-        /* paint is an ordinary ring 3 program. It is started here and then
-           draws on its own, through the window server, while this task runs
-           the compositor. */
+        /* Open with a terminal, which is the most useful thing to have
+           there. Everything else is on the launcher. It is an ordinary ring
+           3 program and draws on its own, through the window server, while
+           this task runs the compositor. */
         u32 psize = 0;
-        u8 *pimg = vfs_slurp("/paint.elf", &psize);
+        u8 *pimg = vfs_slurp("/term.elf", &psize);
         if (pimg) {
-            int rc = user_spawn_elf("paint", pimg, psize);
-            if (rc < 0) kprintf("desktop: paint: %s" "\n", elf_error(rc));
+            int rc = user_spawn_elf("term", pimg, psize);
+            if (rc < 0) kprintf("desktop: term: %s" "\n", elf_error(rc));
             kfree(pimg);
         }
-        app_about();
         wm_run();
         /* the desktop owned the screen; give the console its own back */
         vga_clear();

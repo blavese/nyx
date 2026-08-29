@@ -14,6 +14,8 @@
 extern const u8 builtin_hello_start[], builtin_hello_end[];
 extern const u8 builtin_count_start[], builtin_count_end[];
 extern const u8 builtin_wintest_start[], builtin_wintest_end[];
+extern const u8 builtin_term_start[], builtin_term_end[];
+extern const u8 builtin_settings_start[], builtin_settings_end[];
 extern const u8 builtin_paint_start[], builtin_paint_end[];
 
 typedef struct {
@@ -25,6 +27,8 @@ static const program_t PROGRAMS[] = {
     { "hello.elf",   builtin_hello_start,   builtin_hello_end },
     { "count.elf",   builtin_count_start,   builtin_count_end },
     { "wintest.elf", builtin_wintest_start, builtin_wintest_end },
+    { "term.elf",    builtin_term_start,    builtin_term_end },
+    { "settings.elf", builtin_settings_start, builtin_settings_end },
     { "paint.elf",   builtin_paint_start,   builtin_paint_end },
 };
 

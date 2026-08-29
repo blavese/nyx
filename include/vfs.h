@@ -18,6 +18,7 @@
 #define VFS_NAME_MAX 32
 #define VFS_MAX_OPEN 16
 
+
 /* Flags for vfs_open. */
 #define O_READ   0x01
 #define O_WRITE  0x02

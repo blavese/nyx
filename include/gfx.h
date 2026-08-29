@@ -16,3 +16,11 @@ void surf_line(u32 *px, int w, int h, int x0, int y0, int x1, int y1, int r, u32
 void surf_char(u32 *px, int w, int h, int x, int y, char c, u32 fg);
 void surf_text(u32 *px, int w, int h, int x, int y, const char *s, u32 fg);
 void surf_blit(const u32 *px, int w, int h, int dx, int dy);
+
+/* Chrome drawing. These go straight to the screen, because the window
+   manager composites there rather than into a surface of its own. */
+void fb_round_rect(int x, int y, int w, int h, int r, u32 rgb);
+void fb_round_frame(int x, int y, int w, int h, int r, u32 rgb);
+void fb_shadow(int x, int y, int w, int h, int r, int spread);
+void fb_vgradient(int x, int y, int w, int h, u32 top, u32 bottom);
+u32  gfx_mix(u32 under, u32 over, int alpha);

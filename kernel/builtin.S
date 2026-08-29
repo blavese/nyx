@@ -32,6 +32,20 @@ builtin_wintest_start:
 builtin_wintest_end:
 
 .balign 4
+.global builtin_term_start
+.global builtin_term_end
+builtin_term_start:
+.incbin "build/user/term.elf"
+builtin_term_end:
+
+.balign 4
+.global builtin_settings_start
+.global builtin_settings_end
+builtin_settings_start:
+.incbin "build/user/settings.elf"
+builtin_settings_end:
+
+.balign 4
 .global builtin_paint_start
 .global builtin_paint_end
 builtin_paint_start:

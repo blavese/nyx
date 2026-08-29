@@ -106,3 +106,97 @@ void surf_blit(const u32 *px, int w, int h, int dx, int dy) {
         for (int i = 0; i < w; i++)
             fb_put((u32)(dx + i), (u32)(dy + j), px[j * w + i]);
 }
+
+/* --- chrome --------------------------------------------------------------
+
+   Rounded corners and shadows, drawn straight to the screen. A real
+   rasteriser would antialias the curve; at these radii a stack of
+   shortening rows is indistinguishable and costs one comparison per row. */
+
+u32 gfx_mix(u32 under, u32 over, int alpha) {
+    int ur = (int)((under >> 16) & 0xFF), ug = (int)((under >> 8) & 0xFF), ub = (int)(under & 0xFF);
+    int orr = (int)((over >> 16) & 0xFF), og = (int)((over >> 8) & 0xFF), ob = (int)(over & 0xFF);
+    int r = ur + (orr - ur) * alpha / 255;
+    int g = ug + (og - ug) * alpha / 255;
+    int b = ub + (ob - ub) * alpha / 255;
+    return RGB(r, g, b);
+}
+
+/* How far in from the edge row `i` of a corner of radius `r` starts. */
+static int corner_inset(int r, int i) {
+    int dy = r - i;
+    int dx = r;
+    while (dx > 0 && dx * dx + dy * dy > r * r) dx--;
+    return r - dx;
+}
+
+void fb_round_rect(int x, int y, int w, int h, int r, u32 rgb) {
+    if (w <= 0 || h <= 0) return;
+    if (r <= 0) { fb_rect((u32)x, (u32)y, (u32)w, (u32)h, rgb); return; }
+    if (r * 2 > w) r = w / 2;
+    if (r * 2 > h) r = h / 2;
+
+    fb_rect((u32)x, (u32)(y + r), (u32)w, (u32)(h - r * 2), rgb);
+    for (int i = 0; i < r; i++) {
+        int inset = corner_inset(r, i);
+        fb_rect((u32)(x + inset), (u32)(y + i), (u32)(w - inset * 2), 1, rgb);
+        fb_rect((u32)(x + inset), (u32)(y + h - 1 - i), (u32)(w - inset * 2), 1, rgb);
+    }
+}
+
+void fb_round_frame(int x, int y, int w, int h, int r, u32 rgb) {
+    if (w <= 0 || h <= 0) return;
+    if (r <= 0) { fb_frame((u32)x, (u32)y, (u32)w, (u32)h, rgb); return; }
+    if (r * 2 > w) r = w / 2;
+    if (r * 2 > h) r = h / 2;
+
+    fb_rect((u32)x, (u32)(y + r), 1, (u32)(h - r * 2), rgb);
+    fb_rect((u32)(x + w - 1), (u32)(y + r), 1, (u32)(h - r * 2), rgb);
+    for (int i = 0; i < r; i++) {
+        int inset = corner_inset(r, i);
+        fb_put((u32)(x + inset), (u32)(y + i), rgb);
+        fb_put((u32)(x + w - 1 - inset), (u32)(y + i), rgb);
+        fb_put((u32)(x + inset), (u32)(y + h - 1 - i), rgb);
+        fb_put((u32)(x + w - 1 - inset), (u32)(y + h - 1 - i), rgb);
+    }
+    fb_rect((u32)(x + r), (u32)y, (u32)(w - r * 2), 1, rgb);
+    fb_rect((u32)(x + r), (u32)(y + h - 1), (u32)(w - r * 2), 1, rgb);
+}
+
+/* A soft edge under a window, drawn by darkening what is already there in
+   rings that fade outward. Reading the framebuffer back is what makes this
+   work over any wallpaper without knowing what it is. */
+void fb_shadow(int x, int y, int w, int h, int r, int spread) {
+    for (int s = spread; s >= 1; s--) {
+        int alpha = 70 / (s + 1);
+        int rx = x - s, ry = y - s + 2, rw = w + s * 2, rh = h + s * 2;
+        int rr = r + s;
+
+        for (int j = 0; j < rh; j++) {
+            int py = ry + j;
+            if (py < 0 || py >= (int)fb_height()) continue;
+
+            int inset = 0;
+            if (j < rr) inset = corner_inset(rr, j);
+            else if (j >= rh - rr) inset = corner_inset(rr, rh - 1 - j);
+
+            for (int i = inset; i < rw - inset; i++) {
+                /* Only the ring matters; the inside is covered anyway. */
+                bool edge = (i < inset + 2) || (i >= rw - inset - 2) ||
+                            (j < 2) || (j >= rh - 2);
+                if (!edge) continue;
+                int px = rx + i;
+                if (px < 0 || px >= (int)fb_width()) continue;
+                fb_put((u32)px, (u32)py, gfx_mix(fb_get((u32)px, (u32)py), 0, alpha));
+            }
+        }
+    }
+}
+
+void fb_vgradient(int x, int y, int w, int h, u32 top, u32 bottom) {
+    if (h <= 0) return;
+    for (int j = 0; j < h; j++) {
+        u32 c = gfx_mix(top, bottom, j * 255 / (h > 1 ? h - 1 : 1));
+        fb_rect((u32)x, (u32)(y + j), (u32)w, 1, c);
+    }
+}

@@ -29,6 +29,7 @@
 #include "wm.h"
 #include "font.h"
 #include "winsrv.h"
+#include "theme.h"
 #include "builtin.h"
 
 static int passed, failed;
@@ -552,6 +553,48 @@ static void test_open_files(void) {
     vfs_delete("/fd.txt");
 }
 
+static void test_theme(void) {
+    vfs_delete(THEME_FILE);
+    theme_init();
+
+    ok("there is a default accent", theme()->accent != 0);
+    ok("and it is one of the presets", theme_current_preset() >= 0);
+
+    /* A preset changes the palette without touching anything else. */
+    int corner_before = theme()->corner;
+    theme_apply_preset(3);
+    ok("a preset changes the accent", theme()->accent == theme_preset_accent(3));
+    ok("and leaves the rest alone", theme()->corner == corner_before);
+
+    /* Saving and reloading has to round trip, or the settings window would
+       appear to work and then forget. */
+    theme_apply_preset(4);
+    ok("the theme saves", theme_save());
+    theme_apply_preset(0);
+    ok("reloading reports a change", theme_reload());
+    ok("and brings the saved accent back", theme()->accent == theme_preset_accent(4));
+    ok("reloading again reports no change", !theme_reload());
+
+    /* The file is the interface a ring 3 program writes, so hand-written
+       text has to work exactly as well as what theme_save produces. */
+    const char *hand = "# by hand\npreset 2\nwallpaper 1\ncorner 14\nshadows 0\n";
+    ok("a hand written config writes", vfs_write(THEME_FILE, hand, (u32)strlen(hand)));
+    ok("and is picked up", theme_reload());
+    ok("preset applied", theme()->accent == theme_preset_accent(2));
+    ok("wallpaper applied", theme()->wallpaper == WALLPAPER_GRID);
+    ok("corner applied", theme()->corner == 14);
+    ok("shadows applied", !theme()->shadows);
+
+    /* A value out of range must be clamped rather than believed. */
+    const char *bad = "wallpaper 99\ncorner 900\n";
+    vfs_write(THEME_FILE, bad, (u32)strlen(bad));
+    theme_reload();
+    ok("a silly wallpaper falls back", theme()->wallpaper < WALLPAPER_COUNT);
+    ok("a silly corner is clamped", theme()->corner <= 20);
+
+    vfs_delete(THEME_FILE);
+}
+
 int selftest_run(void) {
     passed = failed = 0;
     kprintf("\n=== nyx self test ===\n");
@@ -576,6 +619,7 @@ int selftest_run(void) {
     kprintf("[windows]\n");    test_wm();
     kprintf("[window server]\n"); test_winsrv();
     kprintf("[built-in programs]\n"); test_builtin();
+    kprintf("[theme]\n");      test_theme();
     kprintf("\n%d passed, %d failed\n", passed, failed);
     kprintf(failed ? "SELFTEST_FAIL\n" : "SELFTEST_PASS\n");
     return failed;

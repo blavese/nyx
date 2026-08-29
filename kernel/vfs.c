@@ -20,7 +20,7 @@
 
 /* --- built-in programs -------------------------------------------------- */
 
-#define MAX_BUILTIN 8
+#define MAX_BUILTIN 12
 
 typedef struct {
     const char *name;
