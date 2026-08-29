@@ -7,6 +7,7 @@
 #include "pmm.h"
 #include "paging.h"
 #include "fs.h"
+#include "vfs.h"
 #include "timer.h"
 #include "sched.h"
 #include "syscall.h"
@@ -100,17 +101,78 @@ static void test_paging(void) {
 }
 
 static void test_fs(void) {
-    fs_delete("t.txt");
-    ok("write file", fs_write("t.txt", "hello", 5));
-    file_t *f = fs_find("t.txt");
-    ok("find file", f && f->size == 5 && memcmp(f->data, "hello", 5) == 0);
-    ok("append", fs_append("t.txt", "!!", 2));
-    f = fs_find("t.txt");
-    ok("append grew the file", f && f->size == 7 && memcmp(f->data, "hello!!", 7) == 0);
-    u32 n = fs_count();
-    ok("create second file", fs_write("u.txt", "x", 1) && fs_count() == n + 1);
-    ok("delete", fs_delete("t.txt") && !fs_find("t.txt"));
-    fs_delete("u.txt");
+    char buf[64];
+    u32 size = 0;
+
+    vfs_delete("/t.txt");
+    ok("write file", vfs_write("/t.txt", "hello", 5));
+    ok("read it back", vfs_read("/t.txt", buf, sizeof(buf)) == 5 && memcmp(buf, "hello", 5) == 0);
+    ok("stat reports the size", vfs_stat("/t.txt", &size, 0) && size == 5);
+    ok("append", vfs_append("/t.txt", "!!", 2));
+    ok("append grew the file",
+       vfs_read("/t.txt", buf, sizeof(buf)) == 7 && memcmp(buf, "hello!!", 7) == 0);
+
+    u32 n = vfs_count("/");
+    ok("create second file", vfs_write("/u.txt", "x", 1) && vfs_count("/") == n + 1);
+    ok("delete", vfs_delete("/t.txt") && !vfs_stat("/t.txt", 0, 0));
+    vfs_delete("/u.txt");
+}
+
+static void test_paths(void) {
+    char out[VFS_PATH_MAX];
+
+    ok("an absolute path is left alone",
+       vfs_resolve("/a/b", out, sizeof(out)) && strcmp(out, "/a/b") == 0);
+    ok("repeated slashes collapse",
+       vfs_resolve("//a///b", out, sizeof(out)) && strcmp(out, "/a/b") == 0);
+    ok("a dot goes nowhere",
+       vfs_resolve("/a/./b", out, sizeof(out)) && strcmp(out, "/a/b") == 0);
+    ok("dot dot climbs one",
+       vfs_resolve("/a/b/..", out, sizeof(out)) && strcmp(out, "/a") == 0);
+    ok("dot dot in the middle",
+       vfs_resolve("/a/../b", out, sizeof(out)) && strcmp(out, "/b") == 0);
+    ok("dot dot stops at the root",
+       vfs_resolve("/../../..", out, sizeof(out)) && strcmp(out, "/") == 0);
+    ok("the root resolves to itself",
+       vfs_resolve("/", out, sizeof(out)) && strcmp(out, "/") == 0);
+
+    /* Relative paths are joined to wherever the caller is. */
+    ok("a directory can be entered", vfs_mkdir("/sub") && vfs_chdir("/sub"));
+    ok("the working directory follows", strcmp(vfs_cwd(), "/sub") == 0);
+    ok("a relative name resolves inside it",
+       vfs_resolve("f.txt", out, sizeof(out)) && strcmp(out, "/sub/f.txt") == 0);
+    ok("and dot dot leaves it",
+       vfs_resolve("../g.txt", out, sizeof(out)) && strcmp(out, "/g.txt") == 0);
+    vfs_chdir("/");
+    vfs_rmdir("/sub");
+}
+
+static void test_directories(void) {
+    vfs_delete("/d/inner.txt");
+    vfs_rmdir("/d/deep");
+    vfs_rmdir("/d");
+
+    ok("mkdir creates one", vfs_mkdir("/d"));
+    bool is_dir = false;
+    ok("it stats as a directory", vfs_stat("/d", 0, &is_dir) && is_dir);
+    ok("making it twice fails", !vfs_mkdir("/d"));
+
+    ok("a file can be written inside it", vfs_write("/d/inner.txt", "nested", 6));
+    char buf[16];
+    ok("and read back out", vfs_read("/d/inner.txt", buf, sizeof(buf)) == 6 &&
+                            memcmp(buf, "nested", 6) == 0);
+    ok("it lists inside, not outside", vfs_count("/d") == 1);
+
+    ok("directories nest", vfs_mkdir("/d/deep") && vfs_write("/d/deep/x", "y", 1));
+    ok("the nested file reads back", vfs_read("/d/deep/x", buf, sizeof(buf)) == 1);
+    ok("a path through two levels resolves",
+       vfs_stat("/d/deep/../deep/x", 0, 0));
+
+    ok("rmdir refuses a directory with things in it", !vfs_rmdir("/d"));
+    ok("emptying it lets rmdir work",
+       vfs_delete("/d/deep/x") && vfs_rmdir("/d/deep") &&
+       vfs_delete("/d/inner.txt") && vfs_rmdir("/d"));
+    ok("and it is gone", !vfs_stat("/d", 0, 0));
 }
 
 static void test_timer(void) {
@@ -221,13 +283,25 @@ static void test_fat(void) {
     if (!out || !in) { ok("scratch buffers", false); return; }
     for (u32 i = 0; i < big; i++) out[i] = (u8)(i * 31 + 7);
 
-    ok("write a multi-cluster file", fat_write_file("sptest.bin", out, big));
-    int got = fat_read_file("sptest.bin", in, big);
+    ok("write a multi-cluster file", fat_write_file("/sptest.bin", out, big));
+    int got = fat_read_file("/sptest.bin", in, big);
     ok("read back the same length", got == (int)big);
     ok("read back the same bytes", got == (int)big && memcmp(out, in, big) == 0);
-    ok("it appears in the directory", fat_count() > 0);
-    ok("delete removes it", fat_delete_file("sptest.bin"));
-    ok("and it is gone", fat_read_file("sptest.bin", in, big) < 0);
+    ok("it appears in the directory", fat_count("/") > 0);
+    ok("delete removes it", fat_delete_file("/sptest.bin"));
+    ok("and it is gone", fat_read_file("/sptest.bin", in, big) < 0);
+
+    /* A subdirectory is a cluster chain rather than the fixed root area, so
+       it exercises a different path through the same code. */
+    fat_delete_file("/sub/deep.bin");
+    fat_rmdir("/sub");
+    ok("a subdirectory can be made", fat_mkdir("/sub"));
+    ok("a file spanning clusters fits in it", fat_write_file("/sub/deep.bin", out, big));
+    ok("and reads back byte for byte",
+       fat_read_file("/sub/deep.bin", in, big) == (int)big && memcmp(out, in, big) == 0);
+    ok("the root does not show what is inside it", fat_count("/sub") == 1);
+    ok("cleaning up works",
+       fat_delete_file("/sub/deep.bin") && fat_rmdir("/sub"));
 
     kfree(out);
     kfree(in);
@@ -425,24 +499,57 @@ static void test_winsrv(void) {
 
 static void test_builtin(void) {
     ok("programs ship with the kernel", builtin_count_programs() >= 3);
-    file_t *f = fs_find("paint.elf");
-    ok("paint is one of them", f && f->size > 1024);
-    ok("and it is a real ELF", f && f->data[0] == 0x7F && f->data[1] == 'E' &&
-                               f->data[2] == 'L' && f->data[3] == 'F');
-    ok("they are marked as coming from the kernel", f && f->builtin);
+
+    u32 size = 0;
+    ok("paint is one of them", vfs_stat("/paint.elf", &size, 0) && size > 1024);
+
+    u8 head[4] = { 0, 0, 0, 0 };
+    vfs_read("/paint.elf", head, sizeof(head));
+    ok("and it is a real ELF",
+       head[0] == 0x7F && head[1] == 'E' && head[2] == 'L' && head[3] == 'F');
+
+    ok("they cannot be overwritten", !vfs_write("/paint.elf", "x", 1));
+    ok("nor deleted", !vfs_delete("/paint.elf"));
 
     /* The disk must not be holding its own copy, or rebuilding the kernel
        would change nothing on a machine that had already booted once. */
     if (blk_present() && fat_mounted()) {
-        diskfs_sync();
-        char name[FS_NAME_MAX];
+        char name[VFS_NAME_MAX];
         bool on_disk = false;
         for (u32 i = 0; ; i++) {
-            if (fat_list(i, name, 0) != 1) break;
-            if (strcmp(name, "PAINT.ELF") == 0) on_disk = true;
+            if (fat_list("/", i, name, 0, 0) != 1) break;
+            if (strcmp(name, "paint.elf") == 0) on_disk = true;
         }
         ok("and are not written to the disk", !on_disk);
     }
+}
+
+static void test_open_files(void) {
+    vfs_delete("/fd.txt");
+
+    int fd = vfs_open("/fd.txt", O_WRITE | O_CREATE);
+    ok("a file can be opened for writing", fd >= 0);
+    if (fd < 0) return;
+
+    ok("writing reports what it took", vfs_fd_write(fd, "abcdefgh", 8) == 8);
+    ok("seeking back works", vfs_fd_seek(fd, 0, 0) == 0);
+    ok("overwriting in place works", vfs_fd_write(fd, "ABC", 3) == 3);
+    ok("the size is what was written", vfs_fd_size(fd) == 8);
+    ok("closing writes it out", vfs_close(fd));
+
+    char buf[16];
+    ok("and the file has the edit",
+       vfs_read("/fd.txt", buf, sizeof(buf)) == 8 && memcmp(buf, "ABCdefgh", 8) == 0);
+
+    fd = vfs_open("/fd.txt", O_READ);
+    ok("reading a chunk at a time works", fd >= 0 && vfs_fd_read(fd, buf, 3) == 3);
+    ok("it starts where it left off", vfs_fd_read(fd, buf, 3) == 3 && memcmp(buf, "def", 3) == 0);
+    ok("seeking to the end reports the size", vfs_fd_seek(fd, 0, 2) == 8);
+    ok("reading past the end gives nothing", vfs_fd_read(fd, buf, 4) == 0);
+    vfs_close(fd);
+
+    ok("a missing file will not open without create", vfs_open("/nope.txt", O_READ) < 0);
+    vfs_delete("/fd.txt");
 }
 
 int selftest_run(void) {
@@ -453,6 +560,9 @@ int selftest_run(void) {
     kprintf("[paging]\n");     test_paging();
     kprintf("[heap]\n");       test_heap();
     kprintf("[filesystem]\n"); test_fs();
+    kprintf("[paths]\n");      test_paths();
+    kprintf("[directories]\n"); test_directories();
+    kprintf("[open files]\n");  test_open_files();
     kprintf("[timer]\n");      test_timer();
     kprintf("[interrupts]\n"); test_interrupts();
     kprintf("[disk]\n");       test_disk();

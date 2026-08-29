@@ -14,6 +14,10 @@
 #include "string.h"
 #include "timer.h"
 #include "winsrv.h"
+#include "vfs.h"
+#include "net.h"
+#include "tcp.h"
+#include "heap.h"
 
 /* User space is everything above the kernel's identity mapped region. */
 #define USER_MIN (KERNEL_SPACE_MB * 1024u * 1024u)
@@ -32,6 +36,13 @@ static bool user_range_ok(u32 addr, u32 len) {
         if (!phys) return false;
     }
     return true;
+}
+
+/* Whose call this is. Used everywhere a handle has to be checked against
+   its owner, so one program cannot drive another's window or socket. */
+static u32 caller_pid(void) {
+    task_t *t = task_current();
+    return t ? t->pid : 0;
 }
 
 static i32 sys_exit(registers_t *r) {
@@ -89,11 +100,198 @@ static i32 sys_read_file(registers_t *r) {
     }
     name[FS_NAME_MAX - 1] = 0;
 
-    file_t *f = fs_find(name);
-    if (!f) return -1;
-    u32 n = f->size < cap ? f->size : cap;
-    memcpy((void *)buf, f->data, n);
+    return vfs_read(name, (void *)buf, cap);
+}
+
+/* --- files ---------------------------------------------------------------
+
+   Every path arrives as a user pointer, so it is copied into the kernel
+   before anything looks at it. A path that is still in user memory can be
+   changed by another thread between the check and the use. */
+
+static bool copy_path(u32 addr, char *out, u32 cap) {
+    for (u32 i = 0; i < cap; i++) {
+        if (!user_range_ok(addr + i, 1)) return false;
+        out[i] = ((const char *)addr)[i];
+        if (!out[i]) return true;
+    }
+    return false;                       /* no terminator inside the limit */
+}
+
+static i32 sys_open(registers_t *r) {
+    char path[VFS_PATH_MAX];
+    if (!copy_path(r->ebx, path, sizeof(path))) return -1;
+    return vfs_open(path, r->ecx);
+}
+
+static i32 sys_close(registers_t *r) {
+    return vfs_close((int)r->ebx) ? 0 : -1;
+}
+
+static i32 sys_fread(registers_t *r) {
+    u32 buf = r->ecx, len = r->edx;
+    if (len > 1024 * 1024) return -1;
+    if (!user_range_ok(buf, len)) return -1;
+    return vfs_fd_read((int)r->ebx, (void *)buf, len);
+}
+
+static i32 sys_fwrite(registers_t *r) {
+    u32 buf = r->ecx, len = r->edx;
+    if (len > 1024 * 1024) return -1;
+    if (!user_range_ok(buf, len)) return -1;
+    return vfs_fd_write((int)r->ebx, (const void *)buf, len);
+}
+
+static i32 sys_seek(registers_t *r) {
+    return vfs_fd_seek((int)r->ebx, (i32)r->ecx, r->edx);
+}
+
+static i32 sys_unlink(registers_t *r) {
+    char path[VFS_PATH_MAX];
+    if (!copy_path(r->ebx, path, sizeof(path))) return -1;
+    return vfs_delete(path) ? 0 : -1;
+}
+
+static i32 sys_mkdir(registers_t *r) {
+    char path[VFS_PATH_MAX];
+    if (!copy_path(r->ebx, path, sizeof(path))) return -1;
+    return vfs_mkdir(path) ? 0 : -1;
+}
+
+static i32 sys_rmdir(registers_t *r) {
+    char path[VFS_PATH_MAX];
+    if (!copy_path(r->ebx, path, sizeof(path))) return -1;
+    return vfs_rmdir(path) ? 0 : -1;
+}
+
+static i32 sys_readdir(registers_t *r) {
+    char path[VFS_PATH_MAX];
+    if (!copy_path(r->ebx, path, sizeof(path))) return -1;
+    if (!user_range_ok(r->edx, sizeof(nyx_stat_t))) return -1;
+
+    nyx_stat_t st;
+    memset(&st, 0, sizeof(st));
+    bool is_dir = false;
+    int rc = vfs_list(path, r->ecx, st.name, &st.size, &is_dir);
+    if (rc != 1) return rc < 0 ? -1 : 0;
+    st.is_dir = is_dir ? 1 : 0;
+    memcpy((void *)r->edx, &st, sizeof(st));
+    return 1;
+}
+
+static i32 sys_stat(registers_t *r) {
+    char path[VFS_PATH_MAX];
+    if (!copy_path(r->ebx, path, sizeof(path))) return -1;
+    if (!user_range_ok(r->ecx, sizeof(nyx_stat_t))) return -1;
+
+    nyx_stat_t st;
+    memset(&st, 0, sizeof(st));
+    bool is_dir = false;
+    if (!vfs_stat(path, &st.size, &is_dir)) return -1;
+    st.is_dir = is_dir ? 1 : 0;
+    memcpy((void *)r->ecx, &st, sizeof(st));
+    return 0;
+}
+
+static i32 sys_chdir(registers_t *r) {
+    char path[VFS_PATH_MAX];
+    if (!copy_path(r->ebx, path, sizeof(path))) return -1;
+    return vfs_chdir(path) ? 0 : -1;
+}
+
+static i32 sys_getcwd(registers_t *r) {
+    u32 buf = r->ebx, cap = r->ecx;
+    if (cap == 0 || cap > VFS_PATH_MAX) return -1;
+    if (!user_range_ok(buf, cap)) return -1;
+    const char *at = vfs_cwd();
+    u32 n = (u32)strlen(at);
+    if (n + 1 > cap) return -1;
+    memcpy((void *)buf, at, n + 1);
     return (i32)n;
+}
+
+/* --- sockets -------------------------------------------------------------
+
+   The TCP stack handles one connection at a time, so there is one socket and
+   it belongs to whoever opened it. That is a real limit rather than a
+   simplification of the interface: two programs cannot both be connected. */
+
+static u32 sock_owner;
+static bool sock_open;
+
+static i32 sys_connect(registers_t *r) {
+    char host[128];
+    if (!copy_path(r->ebx, host, sizeof(host))) return -1;
+    u16 port = (u16)r->ecx;
+    if (!port) return -1;
+    if (!net_up()) return -1;
+    if (sock_open) return -1;              /* already in use */
+
+    ipv4_t ip = net_parse_ip(host);
+    if (!ip && !net_resolve(host, &ip, 6000)) return -1;
+    if (!tcp_connect(ip, port, 6000)) return -1;
+
+    sock_owner = caller_pid();
+    sock_open = true;
+    return 0;
+}
+
+static i32 sys_send(registers_t *r) {
+    if (!sock_open || sock_owner != caller_pid()) return -1;
+    u32 buf = r->ecx, len = r->edx;
+    if (len == 0 || len > 1400) return -1;
+    if (!user_range_ok(buf, len)) return -1;
+    return tcp_send((const void *)buf, (u16)len) ? (i32)len : -1;
+}
+
+static i32 sys_recv(registers_t *r) {
+    if (!sock_open || sock_owner != caller_pid()) return -1;
+    u32 buf = r->ecx, len = r->edx;
+    if (len == 0 || len > 65536) return -1;
+    if (!user_range_ok(buf, len)) return -1;
+    return (i32)tcp_recv((u8 *)buf, len, 4000);
+}
+
+static i32 sys_disconnect(registers_t *r) {
+    (void)r;
+    if (!sock_open || sock_owner != caller_pid()) return -1;
+    tcp_close();
+    sock_open = false;
+    return 0;
+}
+
+/* Frees the socket when its owner dies, so a crashed program does not lock
+   the only connection the machine has. */
+void syscall_release(u32 pid) {
+    if (sock_open && sock_owner == pid) { tcp_close(); sock_open = false; }
+}
+
+static i32 sys_resolve(registers_t *r) {
+    char host[128];
+    if (!copy_path(r->ebx, host, sizeof(host))) return -1;
+    if (!user_range_ok(r->ecx, 4)) return -1;
+    if (!net_up()) return -1;
+
+    ipv4_t ip = net_parse_ip(host);
+    if (!ip && !net_resolve(host, &ip, 6000)) return -1;
+    *(u32 *)r->ecx = ip;
+    return 0;
+}
+
+static i32 sys_netinfo(registers_t *r) {
+    if (!user_range_ok(r->ebx, sizeof(nyx_netinfo_t))) return -1;
+    nyx_netinfo_t info;
+    memset(&info, 0, sizeof(info));
+    info.up = net_up() ? 1 : 0;
+    if (info.up) {
+        info.ip = net_ip();
+        info.gateway = net_gateway();
+        info.netmask = net_netmask();
+        info.dns = net_dns();
+        memcpy(info.mac, net_mac(), 6);
+    }
+    memcpy((void *)r->ebx, &info, sizeof(info));
+    return 0;
 }
 
 /* --- the window server ---------------------------------------------------
@@ -101,11 +299,6 @@ static i32 sys_read_file(registers_t *r) {
    Everything below is reached only through these calls. A program never sees
    a window_t, only a handle it was given, and the handle is checked against
    the caller's pid every time so one program cannot drive another's window. */
-
-static u32 caller_pid(void) {
-    task_t *t = task_current();
-    return t ? t->pid : 0;
-}
 
 static i32 sys_win_create(registers_t *r) {
     u32 name_addr = r->ebx;
@@ -171,6 +364,24 @@ static const syscall_fn TABLE[] = {
     [SYS_WIN_POLL]    = sys_win_poll,
     [SYS_WIN_COMMIT]  = sys_win_commit,
     [SYS_WIN_CLOSE]   = sys_win_close,
+    [SYS_OPEN]        = sys_open,
+    [SYS_CLOSE]       = sys_close,
+    [SYS_FREAD]       = sys_fread,
+    [SYS_FWRITE]      = sys_fwrite,
+    [SYS_SEEK]        = sys_seek,
+    [SYS_UNLINK]      = sys_unlink,
+    [SYS_MKDIR]       = sys_mkdir,
+    [SYS_RMDIR]       = sys_rmdir,
+    [SYS_READDIR]     = sys_readdir,
+    [SYS_STAT]        = sys_stat,
+    [SYS_CHDIR]       = sys_chdir,
+    [SYS_GETCWD]      = sys_getcwd,
+    [SYS_CONNECT]     = sys_connect,
+    [SYS_SEND]        = sys_send,
+    [SYS_RECV]        = sys_recv,
+    [SYS_DISCONNECT]  = sys_disconnect,
+    [SYS_RESOLVE]     = sys_resolve,
+    [SYS_NETINFO]     = sys_netinfo,
 };
 
 #define N_SYSCALLS (sizeof(TABLE) / sizeof(TABLE[0]))

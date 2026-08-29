@@ -24,6 +24,7 @@
 #include "syscall.h"
 #include "shell.h"
 #include "winsrv.h"
+#include "vfs.h"
 #include "builtin.h"
 #include "selftest.h"
 #include "string.h"
@@ -56,11 +57,15 @@ static void selftest_task(void) {
 }
 
 static void init_task(void) {
-    fs_write("readme.txt",
-             "nyx is a small operating system written from scratch.\n"
-             "It boots via multiboot, manages its own memory, and\n"
-             "preempts its own tasks. Try: ls, cat, ps, mem, help\n", 158);
-    fs_write("hello.txt", "hello from a filesystem that lives in RAM\n", 42);
+    /* Seeded once. Anything the user has since edited or deleted stays that
+       way, because writing these back every boot would undo their work. */
+    if (!vfs_stat("/readme.txt", 0, 0))
+        vfs_write("/readme.txt",
+                  "nyx is a small operating system written from scratch.\n"
+                  "It boots via multiboot, manages its own memory, and\n"
+                  "preempts its own tasks. Try: ls, cat, ps, mem, help\n", 158);
+    if (!vfs_stat("/hello.txt", 0, 0))
+        vfs_write("/hello.txt", "hello from a filesystem that lives on disk\n", 43);
 
     shell_task();
 }
@@ -106,10 +111,11 @@ void kmain(u32 magic, u32 mbi_addr) {
         kprintf("  video   no vbe, vga text mode\n");
     }
     fs_init();
+    vfs_init();
     if (blk_init()) {
         kprintf("  disk    %s via %s, %d MiB\n", blk_model(), blk_driver(), blk_sectors() / 2048);
-        int n = diskfs_load();
-        if (n >= 0)      kprintf("  fs      %d file(s) restored from disk\n", n);
+        int n = diskfs_mount();
+        if (n >= 0)      kprintf("  fs      fat16 mounted, %d entries in the root\n", n);
         else if (n == -2) {
             /* A brand new disk should just work rather than telling
                someone to run a command they have never heard of. */
@@ -120,7 +126,6 @@ void kmain(u32 magic, u32 mbi_addr) {
     } else {
         kprintf("  disk    none, files will not persist\n");
     }
-    /* After the disk, so a program the user replaced is not overwritten. */
     builtin_install();
     kprintf("  progs   %d built in\n", builtin_count_programs());
 

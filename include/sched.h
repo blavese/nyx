@@ -2,6 +2,10 @@
 #include "types.h"
 #include "idt.h"
 
+/* Matches VFS_PATH_MAX. Spelled out rather than included, because the
+   scheduler has no other reason to know about the filesystem. */
+#define TASK_CWD_MAX 128
+
 typedef enum { TASK_READY, TASK_RUNNING, TASK_SLEEPING, TASK_DEAD } task_state_t;
 
 typedef struct task {
@@ -14,6 +18,7 @@ typedef struct task {
     u32  slices;              /* how many times it has been scheduled */
     u32  dir;                 /* address space, 0 means the kernel's */
     bool user;                /* runs in ring 3 */
+    char cwd[TASK_CWD_MAX];   /* working directory, inherited at creation */
     struct task *next;
 } task_t;
 

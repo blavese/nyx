@@ -11,6 +11,7 @@
 #include "timer.h"
 #include "sched.h"
 #include "fs.h"
+#include "vfs.h"
 #include "blockdev.h"
 #include "diskfs.h"
 #include "fat.h"
@@ -48,7 +49,11 @@ static void cmd_help(void) {
             "  guide           a short tour, start here\n"
             "  desktop         windows, a mouse and a paint program\n"
             "  help            this text\n"
-            "  ls              list files\n"
+            "  ls [PATH]       list a directory\n"
+            "  cd [PATH]       change directory\n"
+            "  pwd             print the current directory\n"
+            "  mkdir NAME      make a directory\n"
+            "  rmdir NAME      remove an empty directory\n"
             "  cat NAME        print a file\n"
             "  write NAME TEXT create or overwrite a file\n"
             "  append NAME TXT add a line to a file\n"
@@ -75,21 +80,45 @@ static void cmd_help(void) {
             "  reboot          reset the machine\n");
 }
 
-static void cmd_ls(void) {
-    u32 n = fs_count();
-    if (!n) { kprintf("(no files)\n"); return; }
-    for (u32 i = 0; i < n; i++) {
-        file_t *f = fs_at(i);
-        if (f) kprintf("  %6d  %s\n", f->size, f->name);
+static void cmd_ls(const char *path) {
+    char where[VFS_PATH_MAX];
+    if (!vfs_resolve(path ? path : ".", where, sizeof(where))) {
+        kprintf("ls: bad path\n");
+        return;
     }
-    kprintf("%d file(s), %d bytes\n", n, fs_bytes_used());
+    bool is_dir = false;
+    if (!(where[0] == '/' && where[1] == 0)) {
+        if (!vfs_stat(where, 0, &is_dir)) { kprintf("ls: %s: not found\n", where); return; }
+        if (!is_dir) { kprintf("ls: %s: not a directory\n", where); return; }
+    }
+
+    u32 files = 0, dirs = 0, bytes = 0;
+    for (u32 i = 0; ; i++) {
+        char name[VFS_NAME_MAX];
+        u32 size = 0;
+        bool sub = false;
+        if (vfs_list(where, i, name, &size, &sub) != 1) break;
+        if (sub) { kprintf("       <dir>  %s/\n", name); dirs++; }
+        else     { kprintf("  %10d  %s\n", size, name); files++; bytes += size; }
+    }
+
+    if (!files && !dirs) { kprintf("(empty)\n"); return; }
+    kprintf("%d file(s) in %d bytes", files, bytes);
+    if (dirs) kprintf(", %d director%s", dirs, dirs == 1 ? "y" : "ies");
+    kputc('\n');
 }
 
 static void cmd_cat(const char *name) {
-    file_t *f = fs_find(name);
-    if (!f) { kprintf("cat: %s: no such file\n", name); return; }
-    for (u32 i = 0; i < f->size; i++) kputc((char)f->data[i]);
-    if (f->size && f->data[f->size - 1] != '\n') kputc('\n');
+    u32 size = 0;
+    bool is_dir = false;
+    if (!vfs_stat(name, &size, &is_dir)) { kprintf("cat: %s: no such file\n", name); return; }
+    if (is_dir) { kprintf("cat: %s: is a directory\n", name); return; }
+
+    u8 *data = vfs_slurp(name, &size);
+    if (!data) { kprintf("cat: %s: cannot read\n", name); return; }
+    for (u32 i = 0; i < size; i++) kputc((char)data[i]);
+    if (size && data[size - 1] != '\n') kputc('\n');
+    kfree(data);
 }
 
 static void join_from(char **argv, u32 argc, u32 start, char *out, u32 cap) {
@@ -117,7 +146,8 @@ static void cmd_mem(void) {
     kprintf("physical: %d KiB total, %d KiB used, %d KiB free\n",
             pmm_total_frames() * 4, pmm_used_frames() * 4, pmm_free_frames() * 4);
     kprintf("heap:     %d KiB total, %d bytes used\n", heap_total() / 1024, heap_used());
-    kprintf("files:    %d using %d bytes\n", fs_count(), fs_bytes_used());
+    if (vfs_disk_backed()) kprintf("files:    on disk, %d KiB free\n", fat_free_bytes() / 1024);
+    else                   kprintf("files:    %d in memory using %d bytes\n", fs_count(), fs_bytes_used());
     kprintf("serial:   irqs=%d got=%d read=%d dropped=%d\n",
             serial_isr_calls(), serial_isr_bytes(), serial_read_bytes(), serial_overruns());
 }
@@ -135,6 +165,14 @@ static void counter_task(void) {
     task_exit();
 }
 
+/* The prompt carries the working directory, because a shell with
+   directories and no way to see where you are is worse than one without. */
+static void prompt(void) {
+    const char *at = vfs_cwd();
+    if (at[0] == '/' && at[1] == 0) kprintf("nyx> ");
+    else                            kprintf("nyx:%s> ", at);
+}
+
 static void execute(char *buf) {
     char *argv[ARG_MAX];
     u32 argc = split(buf, argv, ARG_MAX);
@@ -149,10 +187,12 @@ static void execute(char *buf) {
         /* paint is an ordinary ring 3 program. It is started here and then
            draws on its own, through the window server, while this task runs
            the compositor. */
-        file_t *pf = fs_find("paint.elf");
-        if (pf) {
-            int rc = user_spawn_elf("paint", pf->data, pf->size);
+        u32 psize = 0;
+        u8 *pimg = vfs_slurp("/paint.elf", &psize);
+        if (pimg) {
+            int rc = user_spawn_elf("paint", pimg, psize);
             if (rc < 0) kprintf("desktop: paint: %s" "\n", elf_error(rc));
+            kfree(pimg);
         }
         app_about();
         wm_run();
@@ -162,16 +202,20 @@ static void execute(char *buf) {
     }
     else if (!strcmp(c, "bg")) {
         if (argc < 2) { kprintf("usage: bg PROGRAM" "\n"); return; }
-        file_t *f = fs_find(argv[1]);
-        if (!f) { kprintf("bg: %s: no such file" "\n", argv[1]); return; }
-        int rc = user_spawn_elf(argv[1], f->data, f->size);
+        u32 size = 0;
+        u8 *img = vfs_slurp(argv[1], &size);
+        if (!img) { kprintf("bg: %s: no such file" "\n", argv[1]); return; }
+        int rc = user_spawn_elf(argv[1], img, size);
+        kfree(img);
         if (rc > 0) kprintf("[%d] %s running in the background" "\n", rc, argv[1]);
         else kprintf("bg: %s: %s" "\n", argv[1], elf_error(rc));
     } else if (!strcmp(c, "exec")) {
         if (argc < 2) { kprintf("usage: exec PROGRAM" "\n" "e.g. exec hello.elf" "\n"); return; }
-        file_t *f = fs_find(argv[1]);
-        if (!f) { kprintf("exec: %s: no such file" "\n", argv[1]); return; }
-        int rc = user_spawn_elf(argv[1], f->data, f->size);
+        u32 size = 0;
+        u8 *img = vfs_slurp(argv[1], &size);
+        if (!img) { kprintf("exec: %s: no such file" "\n", argv[1]); return; }
+        int rc = user_spawn_elf(argv[1], img, size);
+        kfree(img);
         if (rc > 0) {
             /* Wait for it, the way a shell does, so its output is not
                interleaved with the next prompt. */
@@ -194,10 +238,12 @@ static void execute(char *buf) {
         kprintf("moves    %d\n", mouse_moves());
     }
     else if (!strcmp(c, "sync")) {
-        kprintf(diskfs_sync() ? "written to disk\n" : "sync: no disk\n");
+        /* Writes already go straight through; this only pushes whatever the
+           drive is still holding in its own cache. */
+        kprintf(diskfs_flush() ? "flushed to disk\n" : "sync: no disk\n");
     } else if (!strcmp(c, "format")) {
         if (!diskfs_available()) { kprintf("format: no disk attached\n"); return; }
-        kprintf(diskfs_format() && diskfs_sync() ? "disk formatted\n" : "format failed\n");
+        kprintf(diskfs_format() ? "disk formatted\n" : "format failed\n");
     } else if (!strcmp(c, "disk")) {
         if (!blk_present()) { kprintf("no disk attached\n"); return; }
         kprintf("model    %s\n", blk_model());
@@ -259,7 +305,7 @@ static void execute(char *buf) {
             kprintf("%s is %s\n", argv[1], b);
         } else kprintf("cannot resolve %s\n", argv[1]);
     }
-    else if (!strcmp(c, "ls")) cmd_ls();
+    else if (!strcmp(c, "ls")) cmd_ls(argc > 1 ? argv[1] : 0);
     else if (!strcmp(c, "cat")) {
         if (argc < 2) kprintf("usage: cat NAME\n"); else cmd_cat(argv[1]);
     } else if (!strcmp(c, "write") || !strcmp(c, "append")) {
@@ -268,12 +314,23 @@ static void execute(char *buf) {
         join_from(argv, argc, 2, text, sizeof(text));
         u32 len = (u32)strlen(text);
         text[len++] = '\n';
-        bool ok = (c[0] == 'w') ? fs_write(argv[1], text, len)
-                                : fs_append(argv[1], text, len);
+        bool ok = (c[0] == 'w') ? vfs_write(argv[1], text, len)
+                                : vfs_append(argv[1], text, len);
         kprintf(ok ? "ok\n" : "failed\n");
     } else if (!strcmp(c, "rm")) {
         if (argc < 2) kprintf("usage: rm NAME\n");
-        else kprintf(fs_delete(argv[1]) ? "ok\n" : "rm: no such file\n");
+        else kprintf(vfs_delete(argv[1]) ? "ok\n" : "rm: no such file\n");
+    } else if (!strcmp(c, "cd")) {
+        const char *where = argc > 1 ? argv[1] : "/";
+        if (!vfs_chdir(where)) kprintf("cd: %s: not a directory\n", where);
+    } else if (!strcmp(c, "pwd")) {
+        kprintf("%s\n", vfs_cwd());
+    } else if (!strcmp(c, "mkdir")) {
+        if (argc < 2) kprintf("usage: mkdir NAME\n");
+        else kprintf(vfs_mkdir(argv[1]) ? "ok\n" : "mkdir: failed\n");
+    } else if (!strcmp(c, "rmdir")) {
+        if (argc < 2) kprintf("usage: rmdir NAME\n");
+        else kprintf(vfs_rmdir(argv[1]) ? "ok\n" : "rmdir: not empty, or not a directory\n");
     } else if (!strcmp(c, "ps")) cmd_ps();
     else if (!strcmp(c, "mem")) cmd_mem();
     else if (!strcmp(c, "uptime")) cmd_uptime();
@@ -304,7 +361,7 @@ static void execute(char *buf) {
 void shell_task(void) {
     welcome_print();
     u32 len = 0;
-    kprintf("nyx> ");
+    prompt();
     for (;;) {
         int ch = kbd_trygetchar();
         if (ch < 0) { hlt(); continue; }   /* woken by the timer or a key */
@@ -315,7 +372,7 @@ void shell_task(void) {
             line[len] = 0;
             execute(line);
             len = 0;
-            kprintf("nyx> ");
+            prompt();
         } else if (c == '\b') {
             if (len) { len--; kputc('\b'); }
         } else if (c >= ' ' && c < 127 && len < LINE_MAX - 2) {

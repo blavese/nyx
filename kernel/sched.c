@@ -5,6 +5,8 @@
  * of telling the interrupt return path to unwind a different one. */
 #include "sched.h"
 #include "winsrv.h"
+#include "vfs.h"
+#include "syscall.h"
 #include "heap.h"
 #include "printf.h"
 #include "string.h"
@@ -22,6 +24,15 @@ static bool started = false;
 
 void sched_init(void) { head = current = 0; next_pid = 1; started = false; }
 
+/* A task starts in the directory its creator was in, which is what makes
+   `cd` then `exec` behave the way anyone would expect. */
+static void inherit_cwd(task_t *t) {
+    task_t *parent = task_current();
+    if (parent && parent->cwd[0]) strncpy(t->cwd, parent->cwd, TASK_CWD_MAX - 1);
+    else                          strncpy(t->cwd, "/", TASK_CWD_MAX - 1);
+    t->cwd[TASK_CWD_MAX - 1] = 0;
+}
+
 task_t *task_create(const char *name, void (*entry)(void)) {
     task_t *t = (task_t *)kcalloc(sizeof(task_t));
     if (!t) return 0;
@@ -32,6 +43,7 @@ task_t *task_create(const char *name, void (*entry)(void)) {
     t->pid = next_pid++;
     strncpy(t->name, name, sizeof(t->name) - 1);
     t->state = TASK_READY;
+    inherit_cwd(t);
 
     /* Build the frame an interrupt return expects to find. Because this is a
        ring 0 task, iret will not pop useresp/ss, so those two are left out of
@@ -69,6 +81,7 @@ task_t *task_create_user(const char *name, u32 dir, u32 entry, u32 stack_top) {
     t->state = TASK_READY;
     t->dir = dir;
     t->user = true;
+    inherit_cwd(t);
 
     /* A frame taken at a privilege change carries the user stack and its
        selector as well, and iret pops both on the way back out. */
@@ -192,7 +205,11 @@ void task_sleep(u32 ms) {
 void task_exit(void) {
     /* Take back anything the task still holds. A graphical program that
        crashes must not leave its window on the desktop. */
-    if (current) winsrv_release(current->pid);
+    if (current) {
+        winsrv_release(current->pid);
+        vfs_release(current->pid);
+        syscall_release(current->pid);
+    }
     if (current) current->state = TASK_DEAD;
     for (;;) task_yield();
 }

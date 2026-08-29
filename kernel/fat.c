@@ -1,13 +1,17 @@
-/* FAT16.
+/* FAT16, with directories.
  *
- * The point of this over the previous custom format is interoperability: a
- * FAT image can be opened by other tools, so files can move between nyx and
- * the machine hosting it. The format is old and fiddly but exhaustively
- * documented, and every field below is laid out where the specification says
- * it goes, because anything else produces an image that other readers call
- * corrupt.
+ * The point of this over a private format is interoperability: a FAT image
+ * can be opened by other tools, so files move between nyx and the machine
+ * hosting it. The format is old and fiddly but exhaustively documented, and
+ * every field below sits where the specification says it goes, because
+ * anything else produces an image other readers call corrupt.
  *
- * Only the root directory is supported. There are no subdirectories. */
+ * The awkward part of FAT16 is that the root directory is not a normal
+ * directory: it lives in a fixed run of sectors before the data area and
+ * cannot grow, while every other directory is an ordinary cluster chain that
+ * can. Everything here goes through dir_read / dir_write, which hide that
+ * difference, so the rest of the file never has to care which kind it has.
+ */
 #include "fat.h"
 #include "ata.h"
 #include "blockdev.h"
@@ -42,6 +46,12 @@ typedef struct {
     u32 size;
 } __attribute__((packed)) dirent_t;
 
+/* Where a directory lives. The root has no cluster chain of its own. */
+typedef struct {
+    bool root;
+    u32  cluster;
+} dir_t;
+
 static bool  mounted;
 static u16   bytes_per_sector;
 static u8    sectors_per_cluster;
@@ -56,11 +66,17 @@ static u32   root_sectors;
 static u32   data_start;
 static u32   cluster_count;
 
-static u8 sec[SECTOR_SIZE];
+/* Two buffers, not one: a directory operation frequently has to consult the
+   allocation table part way through, and a single shared buffer would have
+   the two overwrite each other. */
+static u8 sec[SECTOR_SIZE];      /* table entries and file data */
+static u8 dsec[SECTOR_SIZE];     /* directory entries */
 
 bool fat_mounted(void) { return mounted; }
 u32  fat_total_clusters(void) { return cluster_count; }
 u32  fat_cluster_bytes(void) { return (u32)sectors_per_cluster * SECTOR_SIZE; }
+
+static const dir_t ROOT = { true, 0 };
 
 /* --- 8.3 names ---------------------------------------------------------- */
 
@@ -140,6 +156,14 @@ static void free_chain(u32 cluster) {
 
 static u32 cluster_lba(u32 cluster) {
     return data_start + (cluster - 2) * sectors_per_cluster;
+}
+
+static u32 zero_cluster(u32 cluster) {
+    memset(sec, 0, SECTOR_SIZE);
+    u32 lba = cluster_lba(cluster);
+    for (u32 s = 0; s < sectors_per_cluster; s++)
+        if (!blk_write(lba + s, 1, sec)) return 0;
+    return cluster;
 }
 
 /* --- mounting ----------------------------------------------------------- */
@@ -253,53 +277,231 @@ bool fat_format(const char *label) {
     return fat_mount();
 }
 
-/* --- directory ---------------------------------------------------------- */
+/* --- directories -------------------------------------------------------- */
 
-static bool root_read(u32 index, dirent_t *out) {
-    if (index >= root_entries) return false;
-    u32 per = SECTOR_SIZE / 32;
-    if (!blk_read(root_start + index / per, 1, sec)) return false;
-    memcpy(out, sec + (index % per) * 32, 32);
+static u32 entries_per_cluster(void) { return fat_cluster_bytes() / 32; }
+
+/* How many entries this directory can currently hold. A subdirectory grows,
+   so this is a snapshot rather than a fixed number. */
+static u32 dir_capacity(const dir_t *d) {
+    if (d->root) return root_entries;
+    u32 n = 0, c = d->cluster, guard = 0;
+    while (c >= 2 && c < EOC_MIN && guard++ < cluster_count + 2) {
+        n += entries_per_cluster();
+        c = fat_get(c);
+    }
+    return n;
+}
+
+/* The sector holding entry `index`, and its offset within it. */
+static bool dir_locate(const dir_t *d, u32 index, u32 *lba_out, u32 *off_out) {
+    u32 per_sector = SECTOR_SIZE / 32;
+
+    if (d->root) {
+        if (index >= root_entries) return false;
+        *lba_out = root_start + index / per_sector;
+        *off_out = (index % per_sector) * 32;
+        return true;
+    }
+
+    u32 per_cluster = entries_per_cluster();
+    u32 want = index / per_cluster;
+    u32 c = d->cluster, guard = 0;
+    while (want-- > 0) {
+        if (c < 2 || c >= EOC_MIN) return false;
+        c = fat_get(c);
+        if (guard++ > cluster_count + 2) return false;
+    }
+    if (c < 2 || c >= EOC_MIN) return false;
+
+    u32 within = index % per_cluster;
+    *lba_out = cluster_lba(c) + within / per_sector;
+    *off_out = (within % per_sector) * 32;
     return true;
 }
 
-static bool root_write(u32 index, const dirent_t *in) {
-    if (index >= root_entries) return false;
-    u32 per = SECTOR_SIZE / 32;
-    u32 lba = root_start + index / per;
-    if (!blk_read(lba, 1, sec)) return false;
-    memcpy(sec + (index % per) * 32, in, 32);
-    return blk_write(lba, 1, sec);
+static bool dir_read(const dir_t *d, u32 index, dirent_t *out) {
+    u32 lba, off;
+    if (!dir_locate(d, index, &lba, &off)) return false;
+    if (!blk_read(lba, 1, dsec)) return false;
+    memcpy(out, dsec + off, 32);
+    return true;
 }
 
-static int find_entry(const char *name, dirent_t *out) {
+static bool dir_write(const dir_t *d, u32 index, const dirent_t *in) {
+    u32 lba, off;
+    if (!dir_locate(d, index, &lba, &off)) return false;
+    if (!blk_read(lba, 1, dsec)) return false;
+    memcpy(dsec + off, in, 32);
+    return blk_write(lba, 1, dsec);
+}
+
+/* Adds one cluster to a subdirectory and zeroes it, so the new entries read
+   as free. The root cannot grow; that is the format, not an omission. */
+static bool dir_grow(const dir_t *d) {
+    if (d->root) return false;
+
+    u32 last = d->cluster, guard = 0;
+    while (guard++ < cluster_count + 2) {
+        u16 next = fat_get(last);
+        if (next >= EOC_MIN) break;
+        if (next < 2) return false;
+        last = next;
+    }
+
+    u32 c = alloc_cluster();
+    if (!c) return false;
+    if (!zero_cluster(c)) { fat_set(c, 0); return false; }
+    return fat_set(last, (u16)c);
+}
+
+/* Finds a usable slot, growing the directory if it is full. */
+static int dir_free_slot(const dir_t *d) {
+    for (int attempt = 0; attempt < 2; attempt++) {
+        u32 cap = dir_capacity(d);
+        dirent_t e;
+        for (u32 i = 0; i < cap; i++) {
+            if (!dir_read(d, i, &e)) break;
+            if (e.name[0] == ENT_FREE || e.name[0] == ENT_DELETED) return (int)i;
+        }
+        /* Full. Grow once and look again; if that does not help, or this is
+           the root, which cannot grow, there is nowhere to put it. */
+        if (attempt > 0 || !dir_grow(d)) return -1;
+    }
+    return -1;
+}
+
+/* True for entries that describe a real file or directory. */
+static bool entry_is_real(const dirent_t *e) {
+    if (e->name[0] == ENT_FREE || e->name[0] == ENT_DELETED) return false;
+    if ((e->attr & ATTR_LFN) == ATTR_LFN) return false;
+    if (e->attr & ATTR_VOLUME_ID) return false;
+    return true;
+}
+
+static int dir_find(const dir_t *d, const char *name, dirent_t *out) {
     u8 want[11];
     to_83(name, want);
+    u32 cap = dir_capacity(d);
     dirent_t e;
-    for (u32 i = 0; i < root_entries; i++) {
-        if (!root_read(i, &e)) break;
+    for (u32 i = 0; i < cap; i++) {
+        if (!dir_read(d, i, &e)) break;
         if (e.name[0] == ENT_FREE) break;
-        if (e.name[0] == ENT_DELETED) continue;
-        if ((e.attr & ATTR_LFN) == ATTR_LFN) continue;
-        if (e.attr & (ATTR_VOLUME_ID | ATTR_DIRECTORY)) continue;
+        if (!entry_is_real(&e)) continue;
         if (memcmp(e.name, want, 11) == 0) { if (out) *out = e; return (int)i; }
     }
     return -1;
 }
 
-int fat_list(u32 index, char *name_out, u32 *size_out) {
+/* --- paths -------------------------------------------------------------- */
+
+/* Copies the next component of a path into `out` and returns what is left,
+   or null once the path is exhausted. Leading and repeated slashes are
+   skipped, so "//a///b" reads the same as "/a/b". */
+static const char *next_component(const char *p, char *out, u32 cap) {
+    while (*p == '/') p++;
+    if (!*p) return 0;
+    u32 n = 0;
+    while (*p && *p != '/') {
+        if (n < cap - 1) out[n++] = *p;
+        p++;
+    }
+    out[n] = 0;
+    return p;
+}
+
+/* Walks every component but the last. `leaf` receives the final name, which
+   may not exist yet. A trailing slash is ignored. */
+static bool resolve_parent(const char *path, dir_t *parent, char *leaf, u32 leaf_cap) {
+    dir_t here = ROOT;
+    char part[16], pending[16];
+    bool have_pending = false;
+
+    const char *p = path;
+    for (;;) {
+        p = next_component(p, part, sizeof(part));
+        if (!p) break;
+
+        if (have_pending) {
+            /* The previous component was not the last after all, so descend
+               into it. */
+            if (strcmp(pending, ".") == 0) {
+                /* stay */
+            } else if (strcmp(pending, "..") == 0) {
+                if (here.root) { /* the root is its own parent */ }
+                else {
+                    dirent_t up;
+                    if (dir_find(&here, "..", &up) < 0) return false;
+                    if (up.cluster_lo < 2) here = ROOT;
+                    else { here.root = false; here.cluster = up.cluster_lo; }
+                }
+            } else {
+                dirent_t e;
+                if (dir_find(&here, pending, &e) < 0) return false;
+                if (!(e.attr & ATTR_DIRECTORY)) return false;
+                if (e.cluster_lo < 2) here = ROOT;
+                else { here.root = false; here.cluster = e.cluster_lo; }
+            }
+        }
+        strncpy(pending, part, sizeof(pending) - 1);
+        pending[sizeof(pending) - 1] = 0;
+        have_pending = true;
+    }
+
+    *parent = here;
+    if (have_pending) strncpy(leaf, pending, leaf_cap - 1);
+    else              leaf[0] = 0;            /* the path was just "/" */
+    leaf[leaf_cap - 1] = 0;
+    return true;
+}
+
+/* Resolves a whole path to a directory. */
+static bool resolve_dir(const char *path, dir_t *out) {
+    dir_t parent;
+    char leaf[16];
+    if (!resolve_parent(path, &parent, leaf, sizeof(leaf))) return false;
+    if (!leaf[0]) { *out = parent; return true; }       /* the root itself */
+
+    if (strcmp(leaf, ".") == 0) { *out = parent; return true; }
+    if (strcmp(leaf, "..") == 0) {
+        if (parent.root) { *out = ROOT; return true; }
+        dirent_t up;
+        if (dir_find(&parent, "..", &up) < 0) return false;
+        if (up.cluster_lo < 2) *out = ROOT;
+        else { out->root = false; out->cluster = up.cluster_lo; }
+        return true;
+    }
+
+    dirent_t e;
+    if (dir_find(&parent, leaf, &e) < 0) return false;
+    if (!(e.attr & ATTR_DIRECTORY)) return false;
+    if (e.cluster_lo < 2) *out = ROOT;
+    else { out->root = false; out->cluster = e.cluster_lo; }
+    return true;
+}
+
+/* --- listing ------------------------------------------------------------ */
+
+int fat_list(const char *path, u32 index, char *name_out, u32 *size_out, bool *dir_out) {
     if (!mounted) return -1;
+    dir_t d;
+    if (!resolve_dir(path ? path : "/", &d)) return -1;
+
+    u32 cap = dir_capacity(&d);
     dirent_t e;
     u32 seen = 0;
-    for (u32 i = 0; i < root_entries; i++) {
-        if (!root_read(i, &e)) break;
+    for (u32 i = 0; i < cap; i++) {
+        if (!dir_read(&d, i, &e)) break;
         if (e.name[0] == ENT_FREE) break;
-        if (e.name[0] == ENT_DELETED) continue;
-        if ((e.attr & ATTR_LFN) == ATTR_LFN) continue;
-        if (e.attr & (ATTR_VOLUME_ID | ATTR_DIRECTORY)) continue;
+        if (!entry_is_real(&e)) continue;
+
+        /* "." and ".." are real entries on disk, but listing them is noise. */
+        if (e.name[0] == '.') continue;
+
         if (seen == index) {
             if (name_out) from_83(e.name, name_out);
             if (size_out) *size_out = e.size;
+            if (dir_out)  *dir_out = (e.attr & ATTR_DIRECTORY) != 0;
             return 1;
         }
         seen++;
@@ -307,18 +509,44 @@ int fat_list(u32 index, char *name_out, u32 *size_out) {
     return 0;
 }
 
-u32 fat_count(void) {
+u32 fat_count(const char *path) {
     u32 n = 0;
-    while (fat_list(n, 0, 0) == 1) n++;
+    while (fat_list(path, n, 0, 0, 0) == 1) n++;
     return n;
+}
+
+bool fat_stat(const char *path, u32 *size_out, bool *dir_out) {
+    if (!mounted) return false;
+
+    dir_t parent;
+    char leaf[16];
+    if (!resolve_parent(path, &parent, leaf, sizeof(leaf))) return false;
+
+    if (!leaf[0] || strcmp(leaf, ".") == 0 || strcmp(leaf, "..") == 0) {
+        if (size_out) *size_out = 0;
+        if (dir_out)  *dir_out = true;
+        return true;
+    }
+
+    dirent_t e;
+    if (dir_find(&parent, leaf, &e) < 0) return false;
+    if (size_out) *size_out = e.size;
+    if (dir_out)  *dir_out = (e.attr & ATTR_DIRECTORY) != 0;
+    return true;
 }
 
 /* --- files -------------------------------------------------------------- */
 
-int fat_read_file(const char *name, u8 *buf, u32 cap) {
+int fat_read_file(const char *path, u8 *buf, u32 cap) {
     if (!mounted) return -1;
+
+    dir_t parent;
+    char leaf[16];
+    if (!resolve_parent(path, &parent, leaf, sizeof(leaf))) return -1;
+
     dirent_t e;
-    if (find_entry(name, &e) < 0) return -1;
+    if (dir_find(&parent, leaf, &e) < 0) return -1;
+    if (e.attr & ATTR_DIRECTORY) return -1;
 
     u32 want = e.size < cap ? e.size : cap;
     u32 done = 0;
@@ -338,25 +566,27 @@ int fat_read_file(const char *name, u8 *buf, u32 cap) {
     return (int)done;
 }
 
-bool fat_write_file(const char *name, const u8 *buf, u32 size) {
+bool fat_write_file(const char *path, const u8 *buf, u32 size) {
     if (!mounted) return false;
 
+    dir_t parent;
+    char leaf[16];
+    if (!resolve_parent(path, &parent, leaf, sizeof(leaf))) return false;
+    if (!leaf[0]) return false;
+
     dirent_t e;
-    int slot = find_entry(name, &e);
+    int slot = dir_find(&parent, leaf, &e);
     u32 old_chain = 0;
 
     if (slot >= 0) {
+        if (e.attr & ATTR_DIRECTORY) return false;
         /* Remember the old chain but do not touch it yet. */
         old_chain = e.cluster_lo;
     } else {
         memset(&e, 0, sizeof(e));
-        for (u32 i = 0; i < root_entries; i++) {
-            dirent_t probe;
-            if (!root_read(i, &probe)) break;
-            if (probe.name[0] == ENT_FREE || probe.name[0] == ENT_DELETED) { slot = (int)i; break; }
-        }
+        slot = dir_free_slot(&parent);
         if (slot < 0) return false;
-        to_83(name, e.name);
+        to_83(leaf, e.name);
         e.attr = ATTR_ARCHIVE;
     }
 
@@ -399,7 +629,7 @@ bool fat_write_file(const char *name, const u8 *buf, u32 size) {
     /* One sector write swings the file from the old chain to the new one.
        This is the commit: before it the old file is live, after it the new
        one is, and there is no moment where neither is. */
-    if (!root_write((u32)slot, &e)) { if (first) free_chain(first); return false; }
+    if (!dir_write(&parent, (u32)slot, &e)) { if (first) free_chain(first); return false; }
     if (!blk_flush()) return false;
 
     /* Only now is the old chain unreachable and safe to release. A crash
@@ -409,11 +639,105 @@ bool fat_write_file(const char *name, const u8 *buf, u32 size) {
     return true;
 }
 
+bool fat_delete_file(const char *path) {
+    if (!mounted) return false;
+
+    dir_t parent;
+    char leaf[16];
+    if (!resolve_parent(path, &parent, leaf, sizeof(leaf))) return false;
+
+    dirent_t e;
+    int slot = dir_find(&parent, leaf, &e);
+    if (slot < 0) return false;
+    if (e.attr & ATTR_DIRECTORY) return false;      /* rmdir is a different job */
+
+    if (e.cluster_lo >= 2) free_chain(e.cluster_lo);
+    e.name[0] = ENT_DELETED;
+    if (!dir_write(&parent, (u32)slot, &e)) return false;
+    return blk_flush();
+}
+
+/* --- making and removing directories ------------------------------------ */
+
+bool fat_mkdir(const char *path) {
+    if (!mounted) return false;
+
+    dir_t parent;
+    char leaf[16];
+    if (!resolve_parent(path, &parent, leaf, sizeof(leaf))) return false;
+    if (!leaf[0] || strcmp(leaf, ".") == 0 || strcmp(leaf, "..") == 0) return false;
+    if (dir_find(&parent, leaf, 0) >= 0) return false;      /* already there */
+
+    u32 c = alloc_cluster();
+    if (!c) return false;
+    if (!zero_cluster(c)) { fat_set(c, 0); return false; }
+
+    /* A directory starts with the two entries that make it navigable. ".."
+       pointing at cluster 0 means the root, which is what the format says
+       even though the root has no cluster of its own. */
+    dir_t self = { false, c };
+    dirent_t dot;
+    memset(&dot, 0, sizeof(dot));
+    memset(dot.name, ' ', 11);
+    dot.name[0] = '.';
+    dot.attr = ATTR_DIRECTORY;
+    dot.cluster_lo = (u16)c;
+    dot.write_date = 0x5A21;
+    if (!dir_write(&self, 0, &dot)) { free_chain(c); return false; }
+
+    dot.name[1] = '.';
+    dot.cluster_lo = parent.root ? 0 : (u16)parent.cluster;
+    if (!dir_write(&self, 1, &dot)) { free_chain(c); return false; }
+
+    blk_flush();
+
+    /* Only once the directory is a valid one does anything point at it. */
+    int slot = dir_free_slot(&parent);
+    if (slot < 0) { free_chain(c); return false; }
+
+    dirent_t e;
+    memset(&e, 0, sizeof(e));
+    to_83(leaf, e.name);
+    e.attr = ATTR_DIRECTORY;
+    e.cluster_lo = (u16)c;
+    e.size = 0;                       /* directories report zero, by the spec */
+    e.write_date = 0x5A21;
+    if (!dir_write(&parent, (u32)slot, &e)) { free_chain(c); return false; }
+    return blk_flush();
+}
+
+bool fat_rmdir(const char *path) {
+    if (!mounted) return false;
+
+    dir_t parent;
+    char leaf[16];
+    if (!resolve_parent(path, &parent, leaf, sizeof(leaf))) return false;
+    if (!leaf[0] || leaf[0] == '.') return false;
+
+    dirent_t e;
+    int slot = dir_find(&parent, leaf, &e);
+    if (slot < 0) return false;
+    if (!(e.attr & ATTR_DIRECTORY)) return false;
+
+    /* Refuse while anything is still inside, rather than orphaning it. */
+    if (fat_count(path) > 0) return false;
+
+    if (e.cluster_lo >= 2) free_chain(e.cluster_lo);
+    e.name[0] = ENT_DELETED;
+    if (!dir_write(&parent, (u32)slot, &e)) return false;
+    return blk_flush();
+}
+
+/* --- reclaiming leaked clusters ----------------------------------------- */
+
 /* Frees clusters that no directory entry refers to.
  *
  * A crash between writing a new copy and committing it leaves its clusters
  * allocated but unreachable. Nothing is corrupt, but the space is gone until
- * somebody notices, so this runs at mount. */
+ * somebody notices, so this runs at mount.
+ *
+ * Directories are walked with an explicit queue rather than by recursion:
+ * the depth is whatever the disk says it is, and a kernel stack is small. */
 u32 fat_reclaim(void) {
     if (!mounted) return 0;
 
@@ -421,24 +745,50 @@ u32 fat_reclaim(void) {
     u8 *reachable = (u8 *)kmalloc(total);
     if (!reachable) return 0;
     memset(reachable, 0, total);
-
     reachable[0] = reachable[1] = 1;          /* the two reserved entries */
 
-    dirent_t e;
-    for (u32 i = 0; i < root_entries; i++) {
-        if (!root_read(i, &e)) break;
-        if (e.name[0] == ENT_FREE) break;
-        if (e.name[0] == ENT_DELETED) continue;
-        if ((e.attr & ATTR_LFN) == ATTR_LFN) continue;
-        if (e.attr & ATTR_VOLUME_ID) continue;
+    /* Directories still to visit, by first cluster. The root is not in here
+       because it has no cluster chain. */
+    u32 queue_cap = 64;
+    u32 *queue = (u32 *)kmalloc(queue_cap * 4);
+    if (!queue) { kfree(reachable); return 0; }
+    u32 head = 0, tail = 0;
 
-        u32 c = e.cluster_lo;
-        u32 guard = 0;
-        while (c >= 2 && c < EOC_MIN && c < total && guard++ < total) {
-            if (reachable[c]) break;          /* a loop; stop rather than spin */
-            reachable[c] = 1;
-            c = fat_get(c);
+    dir_t d = ROOT;
+
+    for (;;) {
+        u32 cap = dir_capacity(&d);
+        dirent_t e;
+        for (u32 i = 0; i < cap; i++) {
+            if (!dir_read(&d, i, &e)) break;
+            if (e.name[0] == ENT_FREE) break;
+            if (!entry_is_real(&e)) continue;
+            if (e.name[0] == '.') continue;   /* "." and ".." lead in circles */
+
+            u32 c = e.cluster_lo;
+            u32 guard = 0;
+            while (c >= 2 && c < EOC_MIN && c < total && guard++ < total) {
+                if (reachable[c]) break;      /* a loop; stop rather than spin */
+                reachable[c] = 1;
+                c = fat_get(c);
+            }
+
+            if ((e.attr & ATTR_DIRECTORY) && e.cluster_lo >= 2) {
+                if (tail == queue_cap) {
+                    u32 *bigger = (u32 *)kmalloc(queue_cap * 8);
+                    if (!bigger) break;       /* stop widening, do not lose data */
+                    memcpy(bigger, queue, queue_cap * 4);
+                    kfree(queue);
+                    queue = bigger;
+                    queue_cap *= 2;
+                }
+                queue[tail++] = e.cluster_lo;
+            }
         }
+
+        if (head == tail) break;
+        d.root = false;
+        d.cluster = queue[head++];
     }
 
     u32 freed = 0;
@@ -450,19 +800,9 @@ u32 fat_reclaim(void) {
     }
     if (freed) blk_flush();
 
+    kfree(queue);
     kfree(reachable);
     return freed;
-}
-
-bool fat_delete_file(const char *name) {
-    if (!mounted) return false;
-    dirent_t e;
-    int slot = find_entry(name, &e);
-    if (slot < 0) return false;
-    if (e.cluster_lo >= 2) free_chain(e.cluster_lo);
-    e.name[0] = ENT_DELETED;
-    if (!root_write((u32)slot, &e)) return false;
-    return blk_flush();
 }
 
 u32 fat_free_bytes(void) {

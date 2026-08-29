@@ -74,10 +74,22 @@ class Fat16:
                 return False
         return True
 
-    def entries(self):
-        raw = self._read(self.root_start, self.root_sectors)
+    def entries(self, cluster=None):
+        """Directory contents. The root is a fixed run of sectors; every other
+        directory is an ordinary cluster chain, so they are read differently
+        and then look the same."""
+        if cluster is None:
+            raw = self._read(self.root_start, self.root_sectors)
+            limit = self.root_entries
+        else:
+            raw = b""
+            for c in self.chain(cluster):
+                lba = self.data_start + (c - 2) * self.sectors_per_cluster
+                raw += self._read(lba, self.sectors_per_cluster)
+            limit = len(raw) // 32
+
         out = []
-        for i in range(self.root_entries):
+        for i in range(limit):
             e = raw[i * 32:(i + 1) * 32]
             if not e or e[0] == 0x00:
                 break
@@ -91,10 +103,23 @@ class Fat16:
             name = e[0:8].decode("ascii", "replace").rstrip()
             ext = e[8:11].decode("ascii", "replace").rstrip()
             full = f"{name}.{ext}" if ext else name
-            cluster = struct.unpack_from("<H", e, 26)[0]
+            first = struct.unpack_from("<H", e, 26)[0]
             size = struct.unpack_from("<I", e, 28)[0]
-            out.append((full, cluster, size, attr))
+            out.append((full, first, size, attr))
         return out
+
+    def walk(self, cluster=None, prefix="/", depth=0):
+        """Every entry in the tree, deepest last. Guards against a directory
+        that points at itself, which a damaged image can do."""
+        if depth > 16:
+            return
+        for name, first, size, attr in self.entries(cluster):
+            if name.startswith("."):
+                continue
+            is_dir = bool(attr & 0x10)
+            yield (prefix + name, first, size, is_dir, depth)
+            if is_dir and first >= 2:
+                yield from self.walk(first, prefix + name + "/", depth + 1)
 
     def chain(self, start):
         out = []
@@ -106,9 +131,14 @@ class Fat16:
             guard += 1
         return out
 
-    def read_file(self, name):
-        for full, cluster, size, _ in self.entries():
-            if full.upper() == name.upper():
+    def read_file(self, path):
+        """Reads by path, so "/docs/deep/x.txt" works and not only a root
+        level name."""
+        want = "/" + path.strip("/")
+        for full, cluster, size, is_dir, _ in self.walk():
+            if is_dir:
+                continue
+            if full.upper() == want.upper():
                 data = b""
                 for c in self.chain(cluster):
                     lba = self.data_start + (c - 2) * self.sectors_per_cluster
@@ -227,14 +257,24 @@ def main():
     print(f"reserved entry0  {fs.fat_entry(0):#06x}   entry1 {fs.fat_entry(1):#06x}")
     print()
 
-    files = fs.entries()
-    print(f"{len(files)} file(s):")
-    for name, cluster, size, attr in files:
+    tree = list(fs.walk())
+    files = [t for t in tree if not t[3]]
+    dirs = [t for t in tree if t[3]]
+    print(f"{len(files)} file(s) in {len(dirs) + 1} director"
+          f"{'y' if not dirs else 'ies'}:")
+
+    for name, cluster, size, is_dir, depth in tree:
+        indent = "  " * depth
+        leaf = name.rsplit("/", 1)[-1]
+        if is_dir:
+            print(f"     <dir>  {indent}{leaf}/")
+            continue
         chain = fs.chain(cluster)
         need = (size + fs.sectors_per_cluster * SECTOR - 1) // (fs.sectors_per_cluster * SECTOR)
         need = max(need, 1) if size else 0
         status = "ok" if len(chain) >= need else f"SHORT CHAIN ({len(chain)} < {need})"
-        print(f"  {size:8d}  {name:<14} cluster {cluster:<6} chain {len(chain):<4} {status}")
+        print(f"  {size:8d}  {indent}{leaf:<14} cluster {cluster:<6} "
+              f"chain {len(chain):<4} {status}")
     return 0
 
 

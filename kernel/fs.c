@@ -1,35 +1,31 @@
-/* A flat in-memory filesystem. Files live on the kernel heap and do not
-   survive a reboot; there is no block device driver yet. */
+/* The in-memory filesystem.
+ *
+ * Files live on the kernel heap and do not survive a reboot. This used to be
+ * the whole filesystem, mirrored to the disk on every change; now the VFS
+ * writes to FAT directly and this is only what answers when no disk exists.
+ * That is a better division: one storage layer per kind of storage, rather
+ * than one pretending to be the other. */
 #include "fs.h"
 #include "heap.h"
 #include "string.h"
-#include "diskfs.h"
 
 static file_t files[FS_MAX_FILES];
-static bool loading = false;   /* suppresses write-back while loading */
-
-void fs_begin_load(void) { loading = true; }
-void fs_end_load(void)   { loading = false; }
-
-static void writeback(void) {
-    if (!loading && diskfs_available()) diskfs_sync();
-}
 
 void fs_init(void) { memset(files, 0, sizeof(files)); }
 
-file_t *fs_find(const char *name) {
+file_t *fs_find(const char *path) {
     for (u32 i = 0; i < FS_MAX_FILES; i++)
-        if (files[i].used && strcmp(files[i].name, name) == 0) return &files[i];
+        if (files[i].used && strcmp(files[i].name, path) == 0) return &files[i];
     return 0;
 }
 
-file_t *fs_create(const char *name) {
-    file_t *f = fs_find(name);
+file_t *fs_create(const char *path) {
+    file_t *f = fs_find(path);
     if (f) return f;
     for (u32 i = 0; i < FS_MAX_FILES; i++) {
         if (!files[i].used) {
             memset(&files[i], 0, sizeof(file_t));
-            strncpy(files[i].name, name, FS_NAME_MAX - 1);
+            strncpy(files[i].name, path, FS_NAME_MAX - 1);
             files[i].used = true;
             return &files[i];
         }
@@ -49,30 +45,35 @@ static bool ensure(file_t *f, u32 need) {
     return true;
 }
 
-bool fs_write(const char *name, const void *buf, u32 len) {
-    file_t *f = fs_create(name);
-    if (!f || !ensure(f, len)) return false;
+bool fs_write(const char *path, const void *buf, u32 len) {
+    file_t *f = fs_create(path);
+    if (!f || f->is_dir || !ensure(f, len ? len : 1)) return false;
     memcpy(f->data, buf, len);
     f->size = len;
-    writeback();
     return true;
 }
 
-bool fs_append(const char *name, const void *buf, u32 len) {
-    file_t *f = fs_create(name);
-    if (!f || !ensure(f, f->size + len)) return false;
+bool fs_append(const char *path, const void *buf, u32 len) {
+    file_t *f = fs_create(path);
+    if (!f || f->is_dir || !ensure(f, f->size + len)) return false;
     memcpy(f->data + f->size, buf, len);
     f->size += len;
-    writeback();
     return true;
 }
 
-bool fs_delete(const char *name) {
-    file_t *f = fs_find(name);
+bool fs_mkdir(const char *path) {
+    if (fs_find(path)) return false;
+    file_t *f = fs_create(path);
+    if (!f) return false;
+    f->is_dir = true;
+    return true;
+}
+
+bool fs_delete(const char *path) {
+    file_t *f = fs_find(path);
     if (!f) return false;
     if (f->data) kfree(f->data);
     memset(f, 0, sizeof(*f));
-    writeback();
     return true;
 }
 

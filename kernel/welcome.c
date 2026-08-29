@@ -41,6 +41,8 @@ void guide_print(void) {
     kprintf("     ls                       see what is stored\n");
     kprintf("     cat readme.txt           read a file\n");
     kprintf("     write notes.txt hello    make one\n");
+    kprintf("     mkdir docs               make a directory\n");
+    kprintf("     cd docs                  go into it, cd / comes back\n");
     kprintf("     disk                     the drive it is all kept on\n");
     kprintf("     Files are written to a real disk. Close this window,\n");
     kprintf("     start it again, and they will still be here.\n\n");
