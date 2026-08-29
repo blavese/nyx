@@ -1,5 +1,6 @@
-/* A flat in-memory filesystem. Files live on the kernel heap and do not
-   survive a reboot; there is no block device driver yet. */
+/* A flat in-memory filesystem. Files live on the kernel heap and are written
+   through to the FAT16 volume on every change, so they survive a reboot;
+   diskfs.c does that half and reads them back at boot. */
 #include "fs.h"
 #include "heap.h"
 #include "string.h"

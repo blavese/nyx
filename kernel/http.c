@@ -9,6 +9,17 @@
 
 #define BODY_CAP 16384
 
+/* Appends if the whole string fits, and reports whether it did. Refusing to
+   truncate matters: half a request line is a request the server will answer
+   in some other way, which is worse than not sending one. */
+static bool append(char *buf, u32 cap, u32 *n, const char *s) {
+    for (; *s; s++) {
+        if (*n >= cap) return false;
+        buf[(*n)++] = *s;
+    }
+    return true;
+}
+
 int http_get(const char *host, const char *path, const char *save_as) {
     ipv4_t ip = net_parse_ip(host);
     if (!ip && !net_resolve(host, &ip, 5000)) return HTTP_ERR_RESOLVE;
@@ -20,22 +31,21 @@ int http_get(const char *host, const char *path, const char *save_as) {
     if (!tcp_connect(ip, 80, 6000)) return HTTP_ERR_CONNECT;
 
     /* HTTP/1.0 with an explicit close, so the server ends the body by
-       closing the connection and we do not have to parse chunked encoding. */
+       closing the connection and we do not have to parse chunked encoding.
+       Every piece goes through the same bounded append, because guarding the
+       variable parts and not the fixed ones still overflows: the trailer is
+       fifty bytes that have to fit after whatever the caller supplied. */
     char req[512];
     u32 n = 0;
-    const char *p;
-    for (p = "GET "; *p; p++) req[n++] = *p;
-    for (p = path; *p && n < sizeof(req) - 64; p++) req[n++] = *p;
-    for (p = " HTTP/1.0"; *p; p++) req[n++] = *p;
-    req[n++] = 13; req[n++] = 10;
-    for (p = "Host: "; *p; p++) req[n++] = *p;
-    for (p = host; *p && n < sizeof(req) - 32; p++) req[n++] = *p;
-    req[n++] = 13; req[n++] = 10;
-    for (p = "User-Agent: nyx/0.1"; *p; p++) req[n++] = *p;
-    req[n++] = 13; req[n++] = 10;
-    for (p = "Connection: close"; *p; p++) req[n++] = *p;
-    req[n++] = 13; req[n++] = 10;
-    req[n++] = 13; req[n++] = 10;
+    bool fits = true;
+    fits &= append(req, sizeof(req), &n, "GET ");
+    fits &= append(req, sizeof(req), &n, path);
+    fits &= append(req, sizeof(req), &n, " HTTP/1.0\r\nHost: ");
+    fits &= append(req, sizeof(req), &n, host);
+    fits &= append(req, sizeof(req), &n,
+                   "\r\nUser-Agent: nyx/" KERNEL_VERSION
+                   "\r\nConnection: close\r\n\r\n");
+    if (!fits) { tcp_close(); return HTTP_ERR_TOOLONG; }
 
     if (!tcp_send(req, (u16)n)) { tcp_close(); return HTTP_ERR_SEND; }
 

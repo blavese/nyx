@@ -93,15 +93,18 @@ static void rtl_isr(registers_t *r) {
 }
 
 bool rtl_send(const void *data, u16 len) {
-    if (!up || len > 1792) return false;
-    if (len < 60) len = 60;                  /* pad to the ethernet minimum */
+    if (!up || len == 0 || len > 1792) return false;
+
+    /* Pad to the ethernet minimum with the zeros already in the buffer,
+       rather than by copying past the end of the caller's frame. */
+    u16 total = len < 60 ? 60 : len;
 
     u8 *buf = tx_buf[tx_slot];
     memset(buf, 0, 1792);
     memcpy(buf, data, len);
 
     outl(io_base + REG_TSAD0 + tx_slot * 4, (u32)buf);
-    outl(io_base + REG_TSD0  + tx_slot * 4, len);
+    outl(io_base + REG_TSD0  + tx_slot * 4, total);
 
     /* Wait for the card to take it. Bit 15 (OWN) goes high when the buffer
        is free again, bit 13 (TOK) when it actually went out. */

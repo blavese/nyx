@@ -56,7 +56,35 @@ static u32   root_sectors;
 static u32   data_start;
 static u32   cluster_count;
 
-static u8 sec[SECTOR_SIZE];
+static u8 sec[SECTOR_SIZE];         /* the directory and file data */
+
+/* One sector of the table, held in memory.
+ *
+ * Finding a free cluster walks the table, and 256 entries share a sector.
+ * Reading that sector once per entry instead of once per 256 is what made
+ * writing a file cost time proportional to the size of the whole volume. The
+ * table gets its own buffer rather than borrowing sec, so following a chain
+ * can no longer overwrite the data sector a caller is part way through. */
+static u8   fat_cache[SECTOR_SIZE];
+static u32  fat_cache_lba;
+static bool fat_cache_valid;
+
+/* Where the last search stopped. A file is a run of allocations, and each
+   one restarting at the front of the table is what made it quadratic. */
+static u32  alloc_hint = 2;
+
+static void fat_forget(void) {
+    fat_cache_valid = false;
+    alloc_hint = 2;
+}
+
+static bool fat_cache_load(u32 lba) {
+    if (fat_cache_valid && fat_cache_lba == lba) return true;
+    if (!blk_read(lba, 1, fat_cache)) { fat_cache_valid = false; return false; }
+    fat_cache_lba = lba;
+    fat_cache_valid = true;
+    return true;
+}
 
 bool fat_mounted(void) { return mounted; }
 u32  fat_total_clusters(void) { return cluster_count; }
@@ -103,29 +131,39 @@ static void from_83(const u8 in[11], char *out) {
 
 static u16 fat_get(u32 cluster) {
     u32 off = cluster * 2;
-    u32 lba = fat_start + off / SECTOR_SIZE;
-    if (!blk_read(lba, 1, sec)) return EOC;
-    return *(u16 *)(sec + (off % SECTOR_SIZE));
+    if (!fat_cache_load(fat_start + off / SECTOR_SIZE)) return EOC;
+    return *(u16 *)(fat_cache + (off % SECTOR_SIZE));
 }
 
 static bool fat_set(u32 cluster, u16 value) {
     u32 off = cluster * 2;
-    /* Both copies of the table have to agree or other readers will object. */
+    u32 lba = fat_start + off / SECTOR_SIZE;
+    if (!fat_cache_load(lba)) return false;
+    *(u16 *)(fat_cache + (off % SECTOR_SIZE)) = value;
+
+    /* Written through rather than buffered: fat_write_file's crash safety
+       depends on the new chain really reaching the disk before the directory
+       entry that points at it. Both copies of the table have to agree or
+       other readers will object, and since they are byte for byte the same,
+       the one sector goes to each of them. */
     for (u32 copy = 0; copy < num_fats; copy++) {
-        u32 lba = fat_start + copy * fat_sectors + off / SECTOR_SIZE;
-        if (!blk_read(lba, 1, sec)) return false;
-        *(u16 *)(sec + (off % SECTOR_SIZE)) = value;
-        if (!blk_write(lba, 1, sec)) return false;
+        if (!blk_write(lba + copy * fat_sectors, 1, fat_cache)) {
+            fat_cache_valid = false;
+            return false;
+        }
     }
     return true;
 }
 
 static u32 alloc_cluster(void) {
-    for (u32 c = 2; c < cluster_count + 2; c++) {
-        if (fat_get(c) == 0) {
-            if (!fat_set(c, EOC)) return 0;
-            return c;
-        }
+    if (!cluster_count) return 0;
+    /* Resume where the last search stopped, wrapping once round the table. */
+    for (u32 n = 0; n < cluster_count; n++) {
+        u32 c = 2 + (alloc_hint - 2 + n) % cluster_count;
+        if (fat_get(c) != 0) continue;
+        if (!fat_set(c, EOC)) return 0;
+        alloc_hint = (c + 1 < cluster_count + 2) ? c + 1 : 2;
+        return c;
     }
     return 0;
 }
@@ -134,6 +172,8 @@ static void free_chain(u32 cluster) {
     while (cluster >= 2 && cluster < EOC_MIN) {
         u16 next = fat_get(cluster);
         fat_set(cluster, 0);
+        /* Somewhere behind the hint is free again, so look there next. */
+        if (cluster < alloc_hint) alloc_hint = cluster;
         cluster = next;
     }
 }
@@ -146,6 +186,7 @@ static u32 cluster_lba(u32 cluster) {
 
 bool fat_mount(void) {
     mounted = false;
+    fat_forget();
     if (!blk_present()) return false;
     if (!blk_read(0, 1, sec)) return false;
 
@@ -182,6 +223,7 @@ bool fat_mount(void) {
 
 bool fat_format(const char *label) {
     if (!blk_present()) return false;
+    fat_forget();
 
     u32 total = blk_sectors();
     if (total < 8192) return false;
@@ -448,7 +490,7 @@ u32 fat_reclaim(void) {
         fat_set(c, 0);
         freed++;
     }
-    if (freed) blk_flush();
+    if (freed) { blk_flush(); alloc_hint = 2; }
 
     kfree(reachable);
     return freed;

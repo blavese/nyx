@@ -14,6 +14,9 @@ if [ -z "$ZIG" ]; then
 fi
 [ -z "$ZIG" ] && { echo "zig not found; set ZIG=/path/to/zig" >&2; exit 1; }
 
+# GNU stat and BSD stat spell this differently, and macOS ships the BSD one.
+filesize() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null || echo '?'; }
+
 mkdir -p build
 
 # The user programs go inside the kernel image, so they are built first.
@@ -31,4 +34,4 @@ SRC=$(find boot kernel -name '*.c' -o -name '*.S' | sort | tr '\n' ' ')
   -Wl,-T,linker.ld -Wl,--build-id=none -Wl,-z,max-page-size=4096 \
   -o build/nyx.elf $SRC
 
-echo "built build/nyx.elf ($(stat -c %s build/nyx.elf 2>/dev/null || echo ?) bytes)"
+echo "built build/nyx.elf ($(filesize build/nyx.elf) bytes)"
