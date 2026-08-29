@@ -2,6 +2,8 @@
 # run.sh          graphical window
 # run.sh -t       headless, serial on stdout
 # run.sh -T       headless self test, exits with the kernel's status
+# run.sh -i       build a bootable image and boot it the way a real machine
+#                 would, through our own bootloader rather than -kernel
 set -e
 cd "$(dirname "$0")"
 QEMU="${QEMU:-}"
@@ -22,6 +24,9 @@ COMMON=(-kernel build/nyx.elf -m 64 -no-reboot
         -drive "file=$DISK,format=raw,if=ide,index=0"
         -netdev user,id=n0 -device rtl8139,netdev=n0)
 case "$1" in
+  -i) shift
+      python tools/mkiso.py
+      exec "$QEMU" -cdrom build/nyx.iso -boot d -m 64 -no-reboot            -drive "file=$DISK,format=raw,if=ide,index=0"            -netdev user,id=n0 -device rtl8139,netdev=n0 -serial stdio "$@" ;;
   -T) shift
       set +e
       "$QEMU" "${COMMON[@]}" -append selftest -serial stdio -display none \
