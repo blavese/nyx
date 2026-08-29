@@ -66,8 +66,21 @@ def main():
 
             if bare and not prefixed:
                 # Does this sit inside a 32-bit immediate holding an address?
-                # Try both alignments that would place these bytes mid-operand.
+                # First handle an address at the start of a known immediate.
+                # This is common for `push $string`, where the first two bytes
+                # of the address can otherwise look exactly like an opcode.
                 looks_like_operand = False
+                address_immediate = (
+                    j > 0 and
+                    (body[j - 1] == 0x68 or
+                     0xB8 <= body[j - 1] <= 0xBF or
+                     body[j - 1] in (0xA1, 0xA3))
+                )
+                if address_immediate and j + 4 <= len(body):
+                    value, = struct.unpack_from("<I", body, j)
+                    looks_like_operand = lo <= value < hi
+
+                # Also try alignments that place the bytes mid-operand.
                 for back in (1, 2, 3):
                     k = j - back
                     if k < 0 or k + 4 > len(body):

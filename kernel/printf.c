@@ -38,23 +38,27 @@ static void emit(sink_t *s, char c) {
 }
 
 static void emit_str(sink_t *s, const char *p) { while (*p) emit(s, *p++); }
+static void emit_pad(sink_t *s, char c, int n) { while (n-- > 0) emit(s, c); }
 
-static void put_uint(sink_t *s, u32 v, u32 base, int upper, int width, char pad) {
+static void put_uint(sink_t *s, u32 v, u32 base, int upper,
+                     int width, char pad, bool left) {
     const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
     char buf[36];
     int n = 0;
     if (v == 0) buf[n++] = '0';
     while (v) { buf[n++] = digits[v % base]; v /= base; }
-    for (int i = n; i < width; i++) emit(s, pad);
+    int digits_len = n;
+    if (!left) emit_pad(s, pad, width - digits_len);
     while (n--) emit(s, buf[n]);
+    if (left) emit_pad(s, ' ', width - digits_len);
 }
 
-static void put_int(sink_t *s, i32 v, int width, char pad) {
+static void put_int(sink_t *s, i32 v, int width, char pad, bool left) {
     if (v < 0) {
         emit(s, '-');
-        put_uint(s, (u32)(-v), 10, 0, width ? width - 1 : 0, pad);
+        put_uint(s, (u32)(-v), 10, 0, width ? width - 1 : 0, pad, left);
     } else {
-        put_uint(s, (u32)v, 10, 0, width, pad);
+        put_uint(s, (u32)v, 10, 0, width, pad, left);
     }
 }
 
@@ -64,23 +68,35 @@ static void format(sink_t *s, const char *fmt, va_list ap) {
         fmt++;
         char pad = ' ';
         int width = 0;
+        bool left = false;
+        if (*fmt == '-') { left = true; fmt++; }
         if (*fmt == '0') { pad = '0'; fmt++; }
         while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
 
         switch (*fmt) {
-            case 'd': case 'i': put_int(s, va_arg(ap, i32), width, pad); break;
-            case 'u': put_uint(s, va_arg(ap, u32), 10, 0, width, pad); break;
-            case 'x': put_uint(s, va_arg(ap, u32), 16, 0, width, pad); break;
-            case 'X': put_uint(s, va_arg(ap, u32), 16, 1, width, pad); break;
-            case 'b': put_uint(s, va_arg(ap, u32), 2, 0, width, pad); break;
+            case 'd': case 'i': put_int(s, va_arg(ap, i32), width, pad, left); break;
+            case 'u': put_uint(s, va_arg(ap, u32), 10, 0, width, pad, left); break;
+            case 'x': put_uint(s, va_arg(ap, u32), 16, 0, width, pad, left); break;
+            case 'X': put_uint(s, va_arg(ap, u32), 16, 1, width, pad, left); break;
+            case 'b': put_uint(s, va_arg(ap, u32), 2, 0, width, pad, left); break;
             case 'p':
                 emit_str(s, "0x");
-                put_uint(s, (u32)(uintptr_t)va_arg(ap, void *), 16, 0, 8, '0');
+                put_uint(s, (u32)(uintptr_t)va_arg(ap, void *), 16, 0, 8, '0', false);
                 break;
-            case 'c': emit(s, (char)va_arg(ap, int)); break;
+            case 'c': {
+                char c = (char)va_arg(ap, int);
+                if (!left) emit_pad(s, ' ', width - 1);
+                emit(s, c);
+                if (left) emit_pad(s, ' ', width - 1);
+                break;
+            }
             case 's': {
                 const char *str = va_arg(ap, const char *);
-                emit_str(s, str ? str : "(null)");
+                str = str ? str : "(null)";
+                int n = (int)strlen(str);
+                if (!left) emit_pad(s, ' ', width - n);
+                emit_str(s, str);
+                if (left) emit_pad(s, ' ', width - n);
                 break;
             }
             case '%': emit(s, '%'); break;
