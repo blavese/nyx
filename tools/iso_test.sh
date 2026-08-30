@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Boots the image the two ways a real machine would, and checks nyx came up.
+# Boots the image every way a real machine might, and checks nyx came up.
 #
-# The kernel has always been handed to QEMU with -kernel, which means QEMU
-# was doing the bootloader's job. Neither of the boots below has that help:
-# one goes through El Torito the way a disc does, the other through the MBR
-# the way a USB stick does, and both run bootloader/cdboot.S.
+# One file, four paths in. None of them is QEMU's -kernel: every one goes
+# through a bootloader of ours, and two of them go through firmware that
+# never enters real mode at all.
+#
+#   BIOS from a disc     El Torito, first catalog entry
+#   BIOS from a stick    the MBR at the front of the image
+#   UEFI from a disc     El Torito, second catalog entry, platform 0xEF
+#   UEFI from a stick    the partition marked as an EFI system partition
 set -e
 cd "$(dirname "$0")/.."
 
@@ -12,32 +16,41 @@ QEMU="${QEMU:-}"
 [ -z "$QEMU" ] && QEMU=$(command -v qemu-system-x86_64 || true)
 [ -z "$QEMU" ] && QEMU="/c/Program Files/qemu/qemu-system-x86_64.exe"
 
+# UEFI needs firmware. QEMU ships it; without it the two UEFI paths are
+# skipped rather than reported as failures.
+FW="${NYX_UEFI_FW:-}"
+[ -z "$FW" ] && FW="/c/Program Files/qemu/share/edk2-x86_64-code.fd"
+
 python tools/mkiso.py >/dev/null
 
 ISO=build/nyx.iso
 DISK=build/isotest.img
-rm -f "$DISK"
-head -c 33554432 /dev/zero > "$DISK"
 
 fails=0
+skipped=0
+
 run() {
   local what="$1"; shift
   local out
   out=$(mktemp)
-  # Type a command at it, so the check proves the shell is really running
-  # rather than that the banner happened to be printed.
-  (sleep 8
+
+  rm -f "$DISK"
+  head -c 33554432 /dev/zero > "$DISK"
+
+  # Type at it, so the check proves the shell is really running rather than
+  # that the banner happened to be printed.
+  (sleep 9
    s="write booted.txt $what"
-   for (( i=0; i<${#s}; i++ )); do printf '%s' "${s:$i:1}"; sleep 0.03; done
-   printf '\n'; sleep 1
+   for (( i=0; i<${#s}; i++ )); do printf '%s' "${s:$i:1}"; sleep 0.05; done
+   printf '\n'; sleep 1.5
    s="cat booted.txt"
-   for (( i=0; i<${#s}; i++ )); do printf '%s' "${s:$i:1}"; sleep 0.03; done
-   printf '\n'; sleep 2) \
-    | timeout 70 "$QEMU" "$@" -m 64 -no-reboot -display none -serial stdio \
+   for (( i=0; i<${#s}; i++ )); do printf '%s' "${s:$i:1}"; sleep 0.05; done
+   printf '\n'; sleep 2.5) \
+    | timeout 90 "$QEMU" "$@" -m 256 -no-reboot -display none -serial stdio \
         > "$out" 2>&1 || true
 
   echo "--- $what ---"
-  for want in "nyx 0.6.2" "video" "progs" "nyx>" "$what"; do
+  for want in "nyx 0.6.2" "long mode" "progs" "nyx>" "$what"; do
     if grep -qF "$want" "$out"; then echo "  PASS  $want"
     else echo "  FAIL  $want"; fails=$((fails+1)); fi
   done
@@ -45,18 +58,36 @@ run() {
 }
 
 echo "=== boot test ==="
-run "booted from the disc" -cdrom "$ISO" -boot d \
-    -drive "file=$DISK,format=raw,if=ide,index=0"
 
-rm -f "$DISK"
-head -c 33554432 /dev/zero > "$DISK"
+run "bios from a disc" -cdrom "$ISO" -boot d \
+    -drive "file=$DISK,format=raw,if=ide,index=1"
 
-run "booted from the stick" \
+run "bios from a stick" \
     -drive "file=$ISO,format=raw,if=ide,index=0" -boot c \
     -drive "file=$DISK,format=raw,if=ide,index=1"
 
+if [ -f "$FW" ]; then
+  run "uefi from a disc" \
+      -drive "if=pflash,format=raw,readonly=on,file=$FW" \
+      -cdrom "$ISO" -boot d \
+      -drive "file=$DISK,format=raw,if=ide,index=1"
+
+  run "uefi from a stick" \
+      -drive "if=pflash,format=raw,readonly=on,file=$FW" \
+      -drive "file=$ISO,format=raw,if=ide,index=0" \
+      -drive "file=$DISK,format=raw,if=ide,index=1"
+else
+  echo "--- uefi ---"
+  echo "  SKIP  no firmware at $FW; set NYX_UEFI_FW to test the UEFI paths"
+  skipped=1
+fi
+
 rm -f "$DISK"
 echo
-if [ $fails -eq 0 ]; then echo "boot test: all checks passed"
-else echo "boot test: $fails failed"; fi
+if [ $fails -eq 0 ]; then
+  if [ $skipped -eq 1 ]; then echo "boot test: the bios paths passed, uefi skipped"
+  else echo "boot test: all four paths passed"; fi
+else
+  echo "boot test: $fails failed"
+fi
 exit $fails

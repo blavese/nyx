@@ -26,12 +26,25 @@ BARE = {0x10, 0x11, 0x28, 0x29, 0x58, 0x59, 0x6E, 0x7E}
 
 
 def sections(data):
-    e_shoff, = struct.unpack_from("<I", data, 0x20)
-    e_shentsize, e_shnum, e_shstrndx = struct.unpack_from("<HHH", data, 0x2E)
+    """Both ELF widths. The section header is not the 32-bit one widened:
+    the fields are in the same order but the addresses and offsets grow, so
+    the layouts have to be spelled out separately."""
+    wide = data[4] == 2
+
+    if wide:
+        e_shoff, = struct.unpack_from("<Q", data, 0x28)
+        e_shentsize, e_shnum, e_shstrndx = struct.unpack_from("<HHH", data, 0x3A)
+    else:
+        e_shoff, = struct.unpack_from("<I", data, 0x20)
+        e_shentsize, e_shnum, e_shstrndx = struct.unpack_from("<HHH", data, 0x2E)
+
     out = []
     for i in range(e_shnum):
         o = e_shoff + i * e_shentsize
-        name, typ, flags, addr, off, size, *_ = struct.unpack_from("<IIIIIIIIII", data, o)
+        if wide:
+            name, typ, flags, addr, off, size = struct.unpack_from("<IIQQQQ", data, o)
+        else:
+            name, typ, flags, addr, off, size = struct.unpack_from("<IIIIII", data, o)
         out.append(dict(name=name, type=typ, flags=flags, addr=addr, off=off, size=size))
     shstr = out[e_shstrndx]
     for s in out:
@@ -79,6 +92,27 @@ def main():
                 if address_immediate and j + 4 <= len(body):
                     value, = struct.unpack_from("<I", body, j)
                     looks_like_operand = lo <= value < hi
+
+                # Instructions that reach memory relative to the
+                # instruction pointer carry a four byte displacement, and on
+                # x86-64 nearly every access to a global is one of those, so
+                # this is the common case rather than a corner. The giveaway
+                # is the addressing byte in front: mod 00 with rm 101 is the
+                # encoding that means "relative to rip".
+                for back in (0, 1, 2, 3):
+                    k = j - back
+                    if k < 1 or k + 4 > len(body):
+                        continue
+                    if (body[k - 1] & 0xC7) != 0x05:
+                        continue
+                    disp, = struct.unpack_from("<i", body, k)
+                    target = s["addr"] + k + 4 + disp
+                    if lo <= target < hi:
+                        looks_like_operand = True
+                        break
+                if looks_like_operand:
+                    filtered += 1
+                    continue
 
                 # A relative call or jump carries a signed displacement
                 # rather than an address, so the bytes never look like one.
