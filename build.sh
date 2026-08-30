@@ -26,6 +26,7 @@ mkdir -p build
 # they are built first.
 ZIG="$ZIG" bash userland/build.sh
 ZIG="$ZIG" bash bootloader/build.sh
+ZIG="$ZIG" bash uefi/build.sh
 
 SRC=$(find boot kernel -name '*.c' -o -name '*.S' | sort | tr '\n' ' ')
 
