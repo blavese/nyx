@@ -3,42 +3,57 @@
 #include "string.h"
 #include "io.h"
 #include "pic.h"
+#include "gdt.h"
 
-u32 scheduler_switch(u32 esp);
+u64 scheduler_switch(u64 rsp);
 
-struct idt_entry { u16 base_low; u16 sel; u8 zero; u8 flags; u16 base_high; } __attribute__((packed));
-struct idt_ptr   { u16 limit; u32 base; } __attribute__((packed));
+/* A gate is sixteen bytes in long mode rather than eight: the handler address
+   is 64-bit, and there is a field for the interrupt stack table, which this
+   kernel does not use. */
+struct idt_entry {
+    u16 base_low;
+    u16 sel;
+    u8  ist;
+    u8  flags;
+    u16 base_mid;
+    u32 base_high;
+    u32 reserved;
+} __attribute__((packed));
+
+struct idt_ptr { u16 limit; u64 base; } __attribute__((packed));
 
 static struct idt_entry idt[256];
 static struct idt_ptr   idtp;
 static isr_handler_t    handlers[256];
 
-extern void idt_flush(u32);
+extern void idt_flush(u64);
 extern void *isr_stub_table[];
 
-static void set_gate(u8 n, u32 base, u16 sel, u8 flags) {
+static void set_gate(u8 n, u64 base, u16 sel, u8 flags) {
     idt[n].base_low  = (u16)(base & 0xFFFF);
-    idt[n].base_high = (u16)((base >> 16) & 0xFFFF);
+    idt[n].base_mid  = (u16)((base >> 16) & 0xFFFF);
+    idt[n].base_high = (u32)(base >> 32);
     idt[n].sel = sel;
-    idt[n].zero = 0;
+    idt[n].ist = 0;
     idt[n].flags = flags;
+    idt[n].reserved = 0;
 }
 
 void register_interrupt_handler(u8 n, isr_handler_t h) { handlers[n] = h; }
 
 void idt_init(void) {
     idtp.limit = sizeof(idt) - 1;
-    idtp.base  = (u32)&idt;
+    idtp.base  = (u64)&idt;
     memset(&idt, 0, sizeof(idt));
     memset(&handlers, 0, sizeof(handlers));
 
     for (int i = 0; i < 48; i++)
-        set_gate((u8)i, (u32)isr_stub_table[i], 0x08, 0x8E);
+        set_gate((u8)i, (u64)isr_stub_table[i], GDT_KERNEL_CODE, 0x8E);
 
     /* 0x80 is the syscall gate: DPL 3 so ring 3 may invoke it. */
-    set_gate(0x80, (u32)isr_stub_table[48], 0x08, 0xEE);
+    set_gate(0x80, (u64)isr_stub_table[48], GDT_KERNEL_CODE, 0xEE);
 
-    idt_flush((u32)&idtp);
+    idt_flush((u64)&idtp);
 }
 
 static const char *EXC[] = {
@@ -53,11 +68,16 @@ static const char *EXC[] = {
 };
 
 /* Called from isr_common in isr.S */
-u32 isr_dispatch(registers_t *r) {
+u64 isr_dispatch(registers_t *r) {
     if (handlers[r->int_no]) handlers[r->int_no](r);
     else if (r->int_no < 32) {
-        panic("unhandled exception %d (%s)\n  eip=%p err=%x cs=%x eflags=%x",
-              r->int_no, EXC[r->int_no], (void *)r->eip, r->err_code, r->cs, r->eflags);
+        u64 cr2 = 0;
+        if (r->int_no == 14) __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+        panic("unhandled exception %d (%s)\n"
+              "  rip=%p err=%x cs=%x rflags=%x\n"
+              "  rsp=%p cr2=%p",
+              (u32)r->int_no, EXC[r->int_no], (void *)r->rip, (u32)r->err_code,
+              (u32)r->cs, (u32)r->rflags, (void *)r->rsp, (void *)cr2);
     }
 
     /* A hardware interrupt has to be acknowledged, or the PIC will never
@@ -65,7 +85,7 @@ u32 isr_dispatch(registers_t *r) {
     if (r->int_no >= 32 && r->int_no < 48) pic_eoi((u8)(r->int_no - 32));
 
     /* The scheduler may hand back a different task's frame. */
-    u32 resume = (u32)r;
+    u64 resume = (u64)r;
     if (r->int_no == 32) resume = scheduler_switch(resume);
     return resume;
 }

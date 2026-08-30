@@ -105,10 +105,10 @@ const char *ahci_model(void) { return model; }
 /* Allocates zeroed memory on a given alignment. The heap is inside the
    identity mapped region, so the address returned is also the physical one
    the controller needs. */
-static void *alloc_aligned(u32 bytes, u32 align) {
+static void *alloc_aligned(u64 bytes, u64 align) {
     u8 *raw = (u8 *)kmalloc(bytes + align);
     if (!raw) return 0;
-    u32 addr = ((u32)raw + align - 1) & ~(align - 1);
+    u64 addr = ((u64)raw + align - 1) & ~(align - 1);
     memset((void *)addr, 0, bytes);
     return (void *)addr;
 }
@@ -158,12 +158,14 @@ static bool run_command(u8 command, u64 lba, u16 count, bool write, u32 bytes) {
     if (write) hdr->cfl_a_w_p |= (1 << 6);             /* W: host to device */
     hdr->prdtl = 1;
     hdr->prdbc = 0;
-    hdr->ctba = (u32)cmd_tbl;
-    hdr->ctbau = 0;
+    /* The controller reads these as one 64-bit address, so the upper half
+       has to be right even when it happens to be zero. */
+    hdr->ctba = (u32)(u64)cmd_tbl;
+    hdr->ctbau = (u32)((u64)cmd_tbl >> 32);
 
     memset(cmd_tbl, 0, sizeof(hba_cmd_tbl_t));
-    cmd_tbl->prdt[0].dba = (u32)dma_buf;
-    cmd_tbl->prdt[0].dbau = 0;
+    cmd_tbl->prdt[0].dba = (u32)(u64)dma_buf;
+    cmd_tbl->prdt[0].dbau = (u32)((u64)dma_buf >> 32);
     cmd_tbl->prdt[0].dbc_i = (bytes - 1) | (1u << 31); /* byte count is n-1 */
 
     fis_reg_h2d_t *fis = (fis_reg_h2d_t *)cmd_tbl->cfis;
@@ -244,12 +246,11 @@ bool ahci_init(void) {
 
     pci_enable_bus_master(&dev);
 
-    u32 abar = pci_read32(dev.bus, dev.slot, dev.func, 0x24) & 0xFFFFFFF0u;
+    u64 abar = pci_read32(dev.bus, dev.slot, dev.func, 0x24) & 0xFFFFFFF0u;
     if (!abar) return false;
 
-    for (u32 off = 0; off < 0x2000; off += PAGE_SIZE)
-        if (!map_page(abar + off, abar + off, PTE_PRESENT | PTE_RW)) return false;
-    hba = (hba_mem_t *)abar;
+    hba = (hba_mem_t *)paging_map_device(abar, 0x2000);
+    if (!hba) return false;
 
     hba->ghc |= (1u << 31);                    /* AHCI enable */
 
@@ -276,8 +277,10 @@ bool ahci_init(void) {
     dma_buf  = (u8 *)alloc_aligned(8 * 512, 4096);
     if (!cmd_list || !fis_area || !cmd_tbl || !dma_buf) return false;
 
-    port->clb = (u32)cmd_list;  port->clbu = 0;
-    port->fb  = (u32)fis_area;  port->fbu  = 0;
+    port->clb = (u32)(u64)cmd_list;
+    port->clbu = (u32)((u64)cmd_list >> 32);
+    port->fb  = (u32)(u64)fis_area;
+    port->fbu = (u32)((u64)fis_area >> 32);
     port->serr = (u32)-1;
     port->is = (u32)-1;
     port->ie = 0;                               /* polled, not interrupt driven */

@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Builds the kernel using zig's bundled clang+lld as a cross compiler, so no
-# separate i686-elf toolchain is needed.
+# separate x86_64-elf toolchain is needed.
 #
-# -mcpu=i686 matters: zig's default x86 target has SSE2 on, and clang will
-# happily emit movd/xmm for 64-bit integer moves. A kernel that has not set
-# CR4.OSFXSR takes #UD on the first one.
+# The SSE flags matter and are not optional. SSE2 is part of the x86-64
+# baseline, so unlike on 32-bit the compiler assumes it is available and will
+# emit xmm registers for ordinary integer and struct copies. A kernel that has
+# not set CR4.OSFXSR takes an invalid-opcode fault on the first one, long
+# before anything has a way to report it. Turning them off costs nothing here:
+# there is no floating point in this kernel.
 set -e
 cd "$(dirname "$0")"
 
@@ -34,14 +37,21 @@ SRC=$(find boot kernel -name '*.c' -o -name '*.S' | sort | tr '\n' ' ')
 # is what makes a changed program actually reach the image.
 BLOBS=$(cat build/user/*.elf build/trampoline.bin | cksum | cut -d' ' -f1)
 
-"$ZIG" cc -target x86-freestanding-none -mcpu=i686 \
+"$ZIG" cc -target x86_64-freestanding-none \
   -ffreestanding -nostdlib -static -O2 -std=gnu11 \
   -fno-sanitize=undefined -fno-stack-protector -fno-stack-check \
-  -fno-builtin -fno-omit-frame-pointer \
+  -fno-builtin -fno-omit-frame-pointer -fno-pic -fno-pie \
   -mno-sse -mno-sse2 -mno-mmx -mno-80387 -mno-red-zone \
+  -mcmodel=small \
   -Wall -Wextra -Wno-unused-parameter \
   -Iinclude -DNYX_BLOB_STAMP=$BLOBS \
   -Wl,-T,linker.ld -Wl,--build-id=none -Wl,-z,max-page-size=4096 \
   -o build/nyx.elf $SRC
 
+# The flat image is what both bootloaders copy into place, and what a
+# multiboot loader is given: the a.out kludge in boot/boot.S points at this
+# rather than at the ELF, because no multiboot loader will parse a 64-bit one.
+python tools/flatten.py build/nyx.elf build/nyx.bin 0x100000 >/dev/null
+
 echo "built build/nyx.elf ($(filesize build/nyx.elf) bytes)"
+echo "      build/nyx.bin ($(filesize build/nyx.bin) bytes)"

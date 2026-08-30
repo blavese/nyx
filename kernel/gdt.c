@@ -1,59 +1,96 @@
-/* Flat segmentation: every segment spans the whole 4 GiB address space, so
-   paging does the real memory protection work. The TSS exists so that an
-   interrupt taken in ring 3 knows which kernel stack to switch to. */
+/* Segmentation in long mode, which barely exists any more.
+ *
+ * A 64-bit code segment has no base and no limit: the processor ignores both
+ * and every address goes straight to paging. What is left in a descriptor is
+ * a handful of bits saying whether it is code or data, which ring it belongs
+ * to, and whether it is 64-bit. That is why the entries below set a limit of
+ * zero and it does not matter.
+ *
+ * The task state segment survives, and for a different reason than it had in
+ * 32-bit: it no longer holds a saved task, only the stack pointers the
+ * processor switches to when an interrupt arrives at a higher privilege. Its
+ * descriptor is sixteen bytes rather than eight, because it is the one thing
+ * left that still needs a 64-bit base.
+ */
 #include "gdt.h"
 #include "string.h"
 
 struct gdt_entry {
     u16 limit_low, base_low;
-    u8  base_mid, access, granularity, base_high;
+    u8  base_mid, access, flags, base_high;
 } __attribute__((packed));
 
-struct gdt_ptr { u16 limit; u32 base; } __attribute__((packed));
+/* The system-segment form, which spills a 64-bit base across two slots. */
+struct gdt_system_entry {
+    u16 limit_low, base_low;
+    u8  base_mid, access, flags, base_high;
+    u32 base_upper;
+    u32 reserved;
+} __attribute__((packed));
+
+struct gdt_ptr { u16 limit; u64 base; } __attribute__((packed));
 
 struct tss_entry {
-    u32 prev, esp0; u32 ss0, esp1, ss1, esp2, ss2;
-    u32 cr3, eip, eflags, eax, ecx, edx, ebx, esp, ebp, esi, edi;
-    u32 es, cs, ss, ds, fs, gs, ldt;
-    u16 trap, iomap_base;
+    u32 reserved0;
+    u64 rsp0, rsp1, rsp2;      /* one stack per privilege level */
+    u64 reserved1;
+    u64 ist[7];                /* interrupt stack table, unused here */
+    u64 reserved2;
+    u16 reserved3;
+    u16 iomap_base;
 } __attribute__((packed));
 
-#define GDT_ENTRIES 6
-static struct gdt_entry gdt[GDT_ENTRIES];
+/* null, kernel code, kernel data, user data, user code, then the TSS, which
+   takes two slots. User data comes before user code because that is the
+   order sysret would want, and there is no reason to differ from it. */
+#define GDT_SLOTS 7
+static struct gdt_entry gdt[GDT_SLOTS];
 static struct gdt_ptr   gdtp;
-static struct tss_entry tss;
+static struct tss_entry tss __attribute__((aligned(16)));
 
-extern void gdt_flush(u32 gdtp_addr);
-extern void tss_flush(void);
+extern void gdt_flush(u64 gdtp_addr);
+extern void tss_flush(u16 selector);
 
-static void set_gate(int i, u32 base, u32 limit, u8 access, u8 gran) {
-    gdt[i].base_low    = (u16)(base & 0xFFFF);
-    gdt[i].base_mid    = (u8)((base >> 16) & 0xFF);
-    gdt[i].base_high   = (u8)((base >> 24) & 0xFF);
-    gdt[i].limit_low   = (u16)(limit & 0xFFFF);
-    gdt[i].granularity = (u8)(((limit >> 16) & 0x0F) | (gran & 0xF0));
-    gdt[i].access      = access;
+static void set_gate(int i, u8 access, u8 flags) {
+    gdt[i].limit_low = 0;
+    gdt[i].base_low = 0;
+    gdt[i].base_mid = 0;
+    gdt[i].access = access;
+    gdt[i].flags = flags;
+    gdt[i].base_high = 0;
 }
 
-void tss_set_stack(u32 esp0) { tss.esp0 = esp0; }
+void tss_set_stack(u64 rsp0) { tss.rsp0 = rsp0; }
 
 void gdt_init(void) {
-    gdtp.limit = sizeof(gdt) - 1;
-    gdtp.base  = (u32)&gdt;
+    memset(gdt, 0, sizeof(gdt));
 
-    set_gate(0, 0, 0, 0, 0);                    /* required null descriptor */
-    set_gate(1, 0, 0xFFFFF, 0x9A, 0xCF);        /* ring 0 code */
-    set_gate(2, 0, 0xFFFFF, 0x92, 0xCF);        /* ring 0 data */
-    set_gate(3, 0, 0xFFFFF, 0xFA, 0xCF);        /* ring 3 code */
-    set_gate(4, 0, 0xFFFFF, 0xF2, 0xCF);        /* ring 3 data */
+    /* access: present | descriptor | executable | readable-writable
+       flags:  the long-mode bit, which is what makes a code segment 64-bit */
+    set_gate(GDT_KERNEL_CODE / 8, 0x9A, 0x20);
+    set_gate(GDT_KERNEL_DATA / 8, 0x92, 0x00);
+    set_gate(GDT_USER_DATA / 8,   0xF2, 0x00);
+    set_gate(GDT_USER_CODE / 8,   0xFA, 0x20);
 
     memset(&tss, 0, sizeof(tss));
-    tss.ss0  = 0x10;                            /* kernel data segment */
-    tss.esp0 = 0;
-    tss.iomap_base = sizeof(tss);
-    u32 base = (u32)&tss;
-    set_gate(5, base, sizeof(tss) - 1, 0x89, 0x00);
+    tss.iomap_base = sizeof(tss);      /* no I/O permission bitmap */
 
-    gdt_flush((u32)&gdtp);
-    tss_flush();
+    u64 base = (u64)&tss;
+    u32 limit = sizeof(tss) - 1;
+    struct gdt_system_entry *t =
+        (struct gdt_system_entry *)&gdt[GDT_TSS / 8];
+    t->limit_low  = (u16)(limit & 0xFFFF);
+    t->base_low   = (u16)(base & 0xFFFF);
+    t->base_mid   = (u8)((base >> 16) & 0xFF);
+    t->access     = 0x89;              /* present, 64-bit available TSS */
+    t->flags      = (u8)((limit >> 16) & 0x0F);
+    t->base_high  = (u8)((base >> 24) & 0xFF);
+    t->base_upper = (u32)(base >> 32);
+    t->reserved   = 0;
+
+    gdtp.limit = sizeof(gdt) - 1;
+    gdtp.base  = (u64)&gdt;
+
+    gdt_flush((u64)&gdtp);
+    tss_flush(GDT_TSS);
 }

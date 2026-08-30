@@ -108,11 +108,11 @@ static void wr(u32 reg, u32 value) { *(volatile u32 *)(mmio + reg) = value; }
 static u32 rd(u32 reg) { return *(volatile u32 *)(mmio + reg); }
 
 /* Aligns an allocation upward; the rings must sit on a 16 byte boundary. */
-static void *alloc_aligned(u32 bytes, u32 align, void **raw_out) {
+static void *alloc_aligned(u64 bytes, u64 align, void **raw_out) {
     u8 *raw = (u8 *)kmalloc(bytes + align);
     if (!raw) return 0;
     *raw_out = raw;
-    u32 addr = ((u32)raw + align - 1) & ~(align - 1);
+    u64 addr = ((u64)raw + align - 1) & ~(align - 1);
     memset((void *)addr, 0, bytes);
     return (void *)addr;
 }
@@ -155,12 +155,12 @@ static bool rx_init(void) {
         rx_buf[i] = (u8 *)kmalloc(BUF_SIZE);
         if (!rx_buf[i]) return false;
         memset(rx_buf[i], 0, BUF_SIZE);
-        rx_ring[i].addr = (u64)(u32)rx_buf[i];
+        rx_ring[i].addr = (u64)rx_buf[i];
         rx_ring[i].status = 0;
     }
 
-    wr(REG_RDBAL, (u32)rx_ring);
-    wr(REG_RDBAH, 0);
+    wr(REG_RDBAL, (u32)(u64)rx_ring);
+    wr(REG_RDBAH, (u32)((u64)rx_ring >> 32));
     wr(REG_RDLEN, sizeof(rx_desc_t) * RX_DESCS);
     wr(REG_RDH, 0);
     wr(REG_RDT, RX_DESCS - 1);        /* the card owns everything up to here */
@@ -179,13 +179,13 @@ static bool tx_init(void) {
         tx_buf[i] = (u8 *)kmalloc(BUF_SIZE);
         if (!tx_buf[i]) return false;
         memset(tx_buf[i], 0, BUF_SIZE);
-        tx_ring[i].addr = (u64)(u32)tx_buf[i];
+        tx_ring[i].addr = (u64)tx_buf[i];
         tx_ring[i].status = 1;        /* descriptor done: free to use */
         tx_ring[i].cmd = 0;
     }
 
-    wr(REG_TDBAL, (u32)tx_ring);
-    wr(REG_TDBAH, 0);
+    wr(REG_TDBAL, (u32)(u64)tx_ring);
+    wr(REG_TDBAH, (u32)((u64)tx_ring >> 32));
     wr(REG_TDLEN, sizeof(tx_desc_t) * TX_DESCS);
     wr(REG_TDH, 0);
     wr(REG_TDT, 0);
@@ -266,14 +266,13 @@ bool e1000_init(void) {
 
     pci_enable_bus_master(&dev);
 
-    u32 phys = dev.bar0 & 0xFFFFFFF0u;
+    u64 phys = dev.bar0 & 0xFFFFFFF0u;
     if (!phys) return false;
 
     /* The register block sits well above the identity mapped region, so it
        needs mappings of its own before a single register can be touched. */
-    for (u32 off = 0; off < 0x20000; off += PAGE_SIZE)
-        if (!map_page(phys + off, phys + off, PTE_PRESENT | PTE_RW)) return false;
-    mmio = (volatile u8 *)phys;
+    mmio = (volatile u8 *)paging_map_device(phys, 0x20000);
+    if (!mmio) return false;
 
     wr(REG_IMC, 0xFFFFFFFF);                          /* interrupts off while we set up */
     wr(REG_CTRL, rd(REG_CTRL) | CTRL_SLU | CTRL_ASDE);

@@ -8,6 +8,7 @@
 #include "timer.h"
 #include "keyboard.h"
 #include "multiboot.h"
+#include "handoff.h"
 #include "pmm.h"
 #include "paging.h"
 #include "heap.h"
@@ -48,7 +49,7 @@ static void banner(void) {
     vga_set_color(VGA_LCYAN, VGA_BLACK);
     kprintf("\n  +--------------------------------+\n");
     kprintf("  |  %s %-25s|\n", KERNEL_NAME, KERNEL_VERSION);
-    kprintf("  |  i686 protected mode           |\n");
+    kprintf("  |  x86-64 long mode              |\n");
     kprintf("  +--------------------------------+\n\n");
     vga_set_color(VGA_LGREY, VGA_BLACK);
 }
@@ -72,26 +73,85 @@ static void init_task(void) {
     shell_task();
 }
 
-void kmain(u32 magic, u32 mbi_addr) {
+/* Where a multiboot loader arrives, once boot.S has put the processor into
+   long mode. It has no handoff structure of its own, so one is built out of
+   what it left behind and the machine carries on through the same door as
+   everything else.
+
+   The handoff lives here rather than on the stack because the stack this is
+   called on belongs to boot.S and is not very large. */
+static handoff_t multiboot_handoff;
+
+void kmain(handoff_t *h);
+
+void kmain_multiboot(u32 magic, u32 mbi_addr) {
+    handoff_t *h = &multiboot_handoff;
+    memset(h, 0, sizeof(*h));
+    h->magic = HANDOFF_MAGIC;
+    strncpy(h->loader, "multiboot", sizeof(h->loader) - 1);
+
+    if (magic != MULTIBOOT_BOOTLOADER_MAGIC) {
+        /* Nothing has been initialised yet, so say it the only way there is
+           and stop. */
+        serial_init();
+        panic("not booted by a multiboot loader (magic=%x)", magic);
+    }
+
+    multiboot_info_t *mbi = (multiboot_info_t *)(u64)mbi_addr;
+
+    if ((mbi->flags & (1 << 2)) && mbi->cmdline)
+        strncpy(h->cmdline, (const char *)(u64)mbi->cmdline, sizeof(h->cmdline) - 1);
+
+    /* Multiboot describes memory in its own format; boil it down to the
+       three kinds the kernel understands. */
+    if (mbi->flags & (1 << 6)) {
+        u64 p = mbi->mmap_addr;
+        u64 end = (u64)mbi->mmap_addr + mbi->mmap_length;
+        while (p < end && h->region_count < HANDOFF_MAX_REGIONS) {
+            mb_mmap_entry_t *e = (mb_mmap_entry_t *)p;
+            mem_region_t *r = &h->regions[h->region_count++];
+            r->base = e->addr;
+            r->len = e->len;
+            r->type = (e->type == 1) ? MEM_USABLE : MEM_RESERVED;
+            r->pad = 0;
+            p += e->size + 4;
+        }
+    }
+
+    if (!h->region_count) {
+        /* A loader that described nothing. Assume what the fallback used to:
+           everything above the first megabyte, up to what it claimed. */
+        mem_region_t *r = &h->regions[h->region_count++];
+        r->base = 0x100000;
+        r->len = ((u64)mbi->mem_upper + 1024) * 1024;
+        r->type = MEM_USABLE;
+        r->pad = 0;
+    }
+
+    /* No framebuffer: fb_init sets a mode itself through the VBE ports,
+       which only exists on a machine that has a BIOS. */
+    h->fb_base = 0;
+
+    kmain(h);
+}
+
+void kmain(handoff_t *h) {
     serial_init();
     vga_init();
 
-    if (magic != MULTIBOOT_BOOTLOADER_MAGIC)
-        panic("not booted by a multiboot loader (magic=%x)", magic);
-    multiboot_info_t *mbi = (multiboot_info_t *)mbi_addr;
+    if (!h || h->magic != HANDOFF_MAGIC)
+        panic("started without a handoff structure");
 
-    if ((mbi->flags & (1 << 2)) && mbi->cmdline) {
-        const char *cmd = (const char *)mbi->cmdline;
-        for (const char *p = cmd; *p; p++)
-            if (!strncmp(p, "selftest", 8)) { want_selftest = true; break; }
-    }
+    for (const char *p = h->cmdline; *p; p++)
+        if (!strncmp(p, "selftest", 8)) { want_selftest = true; break; }
 
     banner();
 
     gdt_init();      kprintf("  gdt     flat segments, tss installed\n");
     idt_init();      kprintf("  idt     256 vectors\n");
     pic_init();      kprintf("  pic     irqs remapped to 32..47\n");
-    pmm_init(mbi);   kprintf("  memory  %d KiB usable\n", pmm_free_frames() * 4);
+    pmm_init(h);     kprintf("  memory  %d KiB usable, via %s\n",
+                             (u32)(pmm_free_frames() * 4), h->loader);
     /* The heap lives in identity mapped memory, so the frame allocator
        has to be told about it or it will hand the same pages out twice. */
     pmm_reserve(HEAP_BASE, HEAP_SIZE);

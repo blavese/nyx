@@ -1,4 +1,4 @@
-/* ELF32 loader.
+/* ELF64 loader.
  *
  * Everything here is reading a file that the kernel did not produce, so every
  * field is checked before it is used. A loader that trusts its input is a
@@ -9,9 +9,9 @@
 #include "printf.h"
 #include "string.h"
 
-#define ET_EXEC   2
-#define EM_386    3
-#define PT_LOAD   1
+#define ET_EXEC    2
+#define EM_X86_64  62
+#define PT_LOAD    1
 
 #define PF_X 0x1
 #define PF_W 0x2
@@ -20,25 +20,34 @@
 typedef struct {
     u8  ident[16];
     u16 type, machine;
-    u32 version, entry, phoff, shoff, flags;
+    u32 version;
+    u64 entry, phoff, shoff;
+    u32 flags;
     u16 ehsize, phentsize, phnum, shentsize, shnum, shstrndx;
-} __attribute__((packed)) elf32_hdr_t;
+} __attribute__((packed)) elf64_hdr_t;
 
+/* The 64-bit program header is not the 32-bit one widened: flags moves ahead
+   of the offsets, which is the sort of difference that silently loads the
+   wrong bytes if it is missed. */
 typedef struct {
-    u32 type, offset, vaddr, paddr, filesz, memsz, flags, align;
-} __attribute__((packed)) elf32_phdr_t;
+    u32 type, flags;
+    u64 offset, vaddr, paddr, filesz, memsz, align;
+} __attribute__((packed)) elf64_phdr_t;
 
 /* User space starts above the kernel's identity mapped region and stops
    below where user stacks live. */
-#define USER_LOAD_MIN (KERNEL_SPACE_MB * 1024u * 1024u)
-#define USER_LOAD_MAX 0x4FF00000u
+/* A program may only ask to be placed inside user space. Anything else is
+   refused rather than mapped, which is what stops an image asking to be
+   loaded over the kernel. */
+#define USER_LOAD_MIN USER_SPACE_BASE
+#define USER_LOAD_MAX (USER_SPACE_BASE + 0x4FF00000ull)
 
 const char *elf_error(int code) {
     switch (code) {
         case ELF_OK:            return "ok";
         case ELF_ERR_SHORT:     return "file is too small to be an executable";
         case ELF_ERR_MAGIC:     return "not an ELF file";
-        case ELF_ERR_CLASS:     return "not a 32-bit little-endian ELF";
+        case ELF_ERR_CLASS:     return "not a 64-bit little-endian ELF";
         case ELF_ERR_TYPE:      return "not an executable for this machine";
         case ELF_ERR_RANGE:     return "a segment lies outside user memory";
         case ELF_ERR_OVERFLOW:  return "a segment runs off the end of the file";
@@ -47,22 +56,22 @@ const char *elf_error(int code) {
     }
 }
 
-int elf_load(u32 dir, const u8 *image, u32 size, u32 *entry_out) {
-    if (size < sizeof(elf32_hdr_t)) return ELF_ERR_SHORT;
+int elf_load(u64 dir, const u8 *image, u64 size, u64 *entry_out) {
+    if (size < sizeof(elf64_hdr_t)) return ELF_ERR_SHORT;
 
-    const elf32_hdr_t *h = (const elf32_hdr_t *)image;
+    const elf64_hdr_t *h = (const elf64_hdr_t *)image;
     if (h->ident[0] != 0x7F || h->ident[1] != 'E' ||
         h->ident[2] != 'L'  || h->ident[3] != 'F') return ELF_ERR_MAGIC;
-    if (h->ident[4] != 1 || h->ident[5] != 1) return ELF_ERR_CLASS;
-    if (h->type != ET_EXEC || h->machine != EM_386) return ELF_ERR_TYPE;
+    if (h->ident[4] != 2 || h->ident[5] != 1) return ELF_ERR_CLASS;   /* 64-bit LE */
+    if (h->type != ET_EXEC || h->machine != EM_X86_64) return ELF_ERR_TYPE;
 
-    if (h->phoff == 0 || h->phentsize < sizeof(elf32_phdr_t)) return ELF_ERR_SHORT;
-    if (h->phoff + (u32)h->phnum * h->phentsize > size) return ELF_ERR_OVERFLOW;
+    if (h->phoff == 0 || h->phentsize < sizeof(elf64_phdr_t)) return ELF_ERR_SHORT;
+    if (h->phoff + (u64)h->phnum * h->phentsize > size) return ELF_ERR_OVERFLOW;
     if (h->entry < USER_LOAD_MIN || h->entry >= USER_LOAD_MAX) return ELF_ERR_RANGE;
 
     for (u32 i = 0; i < h->phnum; i++) {
-        const elf32_phdr_t *p =
-            (const elf32_phdr_t *)(image + h->phoff + (u32)i * h->phentsize);
+        const elf64_phdr_t *p =
+            (const elf64_phdr_t *)(image + h->phoff + (u64)i * h->phentsize);
         if (p->type != PT_LOAD) continue;
         if (p->memsz == 0) continue;
 
@@ -75,12 +84,12 @@ int elf_load(u32 dir, const u8 *image, u32 size, u32 *entry_out) {
 
         /* Pages are the unit of mapping, so cover whatever range the segment
            touches, then place the bytes at their real offset inside it. */
-        u32 start = p->vaddr & ~0xFFFu;
-        u32 end   = (p->vaddr + p->memsz + PAGE_SIZE - 1) & ~0xFFFu;
+        u64 start = p->vaddr & ~0xFFFull;
+        u64 end   = (p->vaddr + p->memsz + PAGE_SIZE - 1) & ~0xFFFull;
 
-        for (u32 va = start; va < end; va += PAGE_SIZE) {
+        for (u64 va = start; va < end; va += PAGE_SIZE) {
             if (virt_to_phys_in(dir, va)) continue;      /* segments can share a page */
-            u32 frame = pmm_alloc_frame();
+            u64 frame = pmm_alloc_frame();
             if (!frame) return ELF_ERR_MEMORY;
             memset((void *)frame, 0, PAGE_SIZE);          /* .bss arrives zeroed */
             if (!map_page_in(dir, va, frame, PTE_PRESENT | PTE_RW | PTE_USER)) {
@@ -89,13 +98,13 @@ int elf_load(u32 dir, const u8 *image, u32 size, u32 *entry_out) {
             }
         }
 
-        for (u32 done = 0; done < p->filesz; ) {
-            u32 va = p->vaddr + done;
-            u32 phys = virt_to_phys_in(dir, va);
+        for (u64 done = 0; done < p->filesz; ) {
+            u64 va = p->vaddr + done;
+            u64 phys = virt_to_phys_in(dir, va);
             if (!phys) return ELF_ERR_MEMORY;
 
-            u32 room = PAGE_SIZE - (va & 0xFFF);
-            u32 n = p->filesz - done;
+            u64 room = PAGE_SIZE - (va & 0xFFF);
+            u64 n = p->filesz - done;
             if (n > room) n = room;
             memcpy((void *)phys, image + p->offset + done, n);
             done += n;

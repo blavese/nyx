@@ -75,7 +75,7 @@ bool fb_init(u32 w, u32 h) {
     if (!pci_find(VGA_VENDOR, VGA_DEVICE, &vga) &&
         !pci_find(VBOX_VENDOR, VBOX_DEVICE, &vga)) return false;
 
-    u32 phys = vga.bar0 & 0xFFFFFFF0u;
+    u64 phys = vga.bar0 & 0xFFFFFFF0u;
     if (!phys) return false;
 
     vbe_write(VBE_ENABLE, VBE_DISABLED);
@@ -97,7 +97,7 @@ bool fb_init(u32 w, u32 h) {
     /* Map the aperture. It sits far above the identity mapped region, so it
        needs page table entries of its own. */
     u32 bytes = pitch * height;
-    for (u32 off = 0; off < bytes; off += PAGE_SIZE) {
+    for (u64 off = 0; off < bytes; off += PAGE_SIZE) {
         if (!map_page(phys + off, phys + off, PTE_PRESENT | PTE_RW)) {
             vbe_write(VBE_ENABLE, VBE_DISABLED);
             return false;

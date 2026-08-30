@@ -1,6 +1,6 @@
 #pragma once
 #include "types.h"
-void  heap_init(u32 start, u32 size);
+void  heap_init(u64 start, u64 size);
 void *kmalloc(size_t n);
 void *kcalloc(size_t n);
 void  kfree(void *p);

@@ -28,9 +28,9 @@ typedef struct {
     window_t *win;
     u32      *raw;             /* what kmalloc returned, for kfree */
     u32      *pixels;          /* page aligned inside raw, and what is mapped */
-    u32       bytes;           /* rounded up to whole pages */
-    u32       user_addr;       /* where the owner sees it, 0 until mapped */
-    u32       dir;             /* the address space it was mapped into */
+    u64       bytes;           /* rounded up to whole pages */
+    u64       user_addr;       /* where the owner sees it, 0 until mapped */
+    u64       dir;             /* the address space it was mapped into */
 } slot_t;
 
 static slot_t slots[WINSRV_MAX];
@@ -55,7 +55,7 @@ static void on_wm_close(window_t *w) {
 
 static void free_slot(slot_t *s) {
     if (s->user_addr && s->dir) {
-        for (u32 off = 0; off < s->bytes; off += PAGE_SIZE) {
+        for (u64 off = 0; off < s->bytes; off += PAGE_SIZE) {
             /* Only unmap where the directory is still the live one; a task
                that has already exited had its whole space torn down. */
             if (paging_current_directory() == s->dir)
@@ -76,14 +76,14 @@ int winsrv_create(u32 pid, const char *title, int cw, int ch) {
     if (handle < 0) return -1;
 
     slot_t *s = &slots[handle];
-    u32 bytes = ((u32)(cw * ch) * 4 + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    u64 bytes = ((u64)(cw * ch) * 4 + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 
     /* Over-allocate and align up. The heap is inside the identity mapped
        region, so an aligned virtual address is an aligned physical one, and
        the pages can be handed to a user directory as they are. */
     u32 *raw = (u32 *)kmalloc(bytes + PAGE_SIZE);
     if (!raw) return -1;
-    u32 *pixels = (u32 *)(((u32)raw + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
+    u32 *pixels = (u32 *)(((u64)raw + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
     memset(pixels, 0, bytes);
 
     /* Cascade windows so two programs do not open on top of each other. The
@@ -112,16 +112,16 @@ int winsrv_create(u32 pid, const char *title, int cw, int ch) {
     return handle;
 }
 
-u32 winsrv_surface(u32 pid, int handle, u32 dir) {
+u64 winsrv_surface(u32 pid, int handle, u64 dir) {
     slot_t *s = lookup(pid, handle);
     if (!s) return 0;
     if (s->user_addr) return s->user_addr;
 
-    u32 base = WINSRV_SURFACE_BASE + (u32)handle * WINSRV_SURFACE_STEP;
-    for (u32 off = 0; off < s->bytes; off += PAGE_SIZE) {
-        u32 phys = (u32)s->pixels + off;      /* identity mapped, so this is it */
+    u64 base = WINSRV_SURFACE_BASE + (u64)handle * WINSRV_SURFACE_STEP;
+    for (u64 off = 0; off < s->bytes; off += PAGE_SIZE) {
+        u64 phys = (u64)s->pixels + off;      /* identity mapped, so this is it */
         if (!map_page_in(dir, base + off, phys, PTE_PRESENT | PTE_RW | PTE_USER)) {
-            for (u32 back = 0; back < off; back += PAGE_SIZE) unmap_page(base + back);
+            for (u64 back = 0; back < off; back += PAGE_SIZE) unmap_page(base + back);
             return 0;
         }
     }

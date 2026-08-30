@@ -25,10 +25,10 @@ BUILD = os.path.join(ROOT, "build")
 DISK = os.path.join(ROOT, "shotcheck.img")
 MONITOR_PORT = 55731
 
-QEMU = os.environ.get("QEMU") or "C:/Program Files/qemu/qemu-system-i386.exe"
+QEMU = os.environ.get("QEMU") or "C:/Program Files/qemu/qemu-system-x86_64.exe"
 if not os.path.exists(QEMU):
     from shutil import which
-    QEMU = which("qemu-system-i386") or QEMU
+    QEMU = which("qemu-system-x86_64") or QEMU
 
 TEAL = (0x2C, 0xC7, 0xA0)
 INDIGO = (0x6E, 0x8A, 0xE8)
@@ -137,7 +137,7 @@ def main():
         f.truncate(32 * 1024 * 1024)
 
     proc = subprocess.Popen(
-        [QEMU, "-kernel", os.path.join(BUILD, "nyx.elf"), "-m", "64",
+        [QEMU, "-kernel", os.path.join(BUILD, "nyx.bin"), "-m", "64",
          "-no-reboot", "-display", "none", "-serial", "stdio",
          "-drive", "file=%s,format=raw,if=ide,index=0" % DISK,
          "-monitor", "tcp:127.0.0.1:%d,server,nowait" % MONITOR_PORT],

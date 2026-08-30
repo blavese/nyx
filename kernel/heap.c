@@ -15,7 +15,7 @@ typedef struct block {
 static block_t *head;
 static u32 total, used;
 
-void heap_init(u32 start, u32 size) {
+void heap_init(u64 start, u64 size) {
     head = (block_t *)start;
     head->size = size - HDR;
     head->free = true;

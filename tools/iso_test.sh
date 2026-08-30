@@ -9,8 +9,8 @@ set -e
 cd "$(dirname "$0")/.."
 
 QEMU="${QEMU:-}"
-[ -z "$QEMU" ] && QEMU=$(command -v qemu-system-i386 || true)
-[ -z "$QEMU" ] && QEMU="/c/Program Files/qemu/qemu-system-i386.exe"
+[ -z "$QEMU" ] && QEMU=$(command -v qemu-system-x86_64 || true)
+[ -z "$QEMU" ] && QEMU="/c/Program Files/qemu/qemu-system-x86_64.exe"
 
 python tools/mkiso.py >/dev/null
 

@@ -12,7 +12,7 @@
 
 typedef struct {
     bool found;                 /* the tables were there and made sense */
-    u32  lapic_base;            /* MMIO address of the local APIC */
+    u64  lapic_base;            /* MMIO address of the local APIC */
     u32  ncpus;
     u8   apic_id[ACPI_MAX_CPUS];
     u8   usable[ACPI_MAX_CPUS]; /* the firmware says this one can be started */

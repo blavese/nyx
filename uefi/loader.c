@@ -338,11 +338,22 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image, EFI_SYSTEM_TABLE *system_table) {
     /* Nothing above this line can be called again. The machine is already in
        long mode with memory identity mapped, so the kernel simply continues
        where the firmware left off. */
+    /* The first bytes of the image are a header, not code: a multiboot
+       header sits near the front and cannot be jumped to. The entry point
+       is stated in the first sixteen bytes. */
+    const char *sig = (const char *)base;
+    for (int i = 0; i < 8; i++)
+        if (sig[i] != "NYXKERN"[i]) {
+            /* Nothing can be printed: boot services are gone. */
+            for (;;) __asm__ volatile ("hlt");
+        }
+    u64 entry_point = *(u64 *)(base + 8);
+
     /* Everything in this file is compiled for the firmware's calling
        convention. The kernel is not: it is an ordinary System V binary and
        expects its argument in a different register, so the type says so. */
     void (__attribute__((sysv_abi)) *enter)(handoff_t *) =
-        (void (__attribute__((sysv_abi)) *)(handoff_t *))base;
+        (void (__attribute__((sysv_abi)) *)(handoff_t *))entry_point;
     enter(h);
 
     for (;;) __asm__ volatile ("hlt");

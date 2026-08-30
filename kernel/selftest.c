@@ -90,8 +90,8 @@ static void test_pmm(void) {
 }
 
 static void test_paging(void) {
-    u32 phys = pmm_alloc_frame();
-    const u32 v = 0x00D00000;
+    u64 phys = pmm_alloc_frame();
+    const u64 v = 0x00D00000;
     ok("map_page", map_page(v, phys, PTE_PRESENT | PTE_RW));
     volatile u32 *p = (volatile u32 *)v;
     *p = 0xDEADBEEF;
@@ -345,43 +345,50 @@ static void test_fat(void) {
 
 /* Builds a minimal but structurally valid ELF32 header in a caller supplied
    buffer, so individual fields can then be corrupted one at a time. */
-static void make_elf(u8 *buf, u32 vaddr) {
-    memset(buf, 0, 128);
+/* A minimal but well formed ELF64 executable, which each test then damages
+   in one specific way. The offsets are the ones in the specification rather
+   than a struct, so that a mistake in the loader's own struct cannot hide
+   here as well. */
+#define ELF_PHOFF 64
+static void make_elf(u8 *buf, u64 vaddr) {
+    memset(buf, 0, 192);
     buf[0] = 0x7F; buf[1] = 'E'; buf[2] = 'L'; buf[3] = 'F';
-    buf[4] = 1;                       /* 32 bit */
+    buf[4] = 2;                       /* 64 bit */
     buf[5] = 1;                       /* little endian */
     *(u16 *)(buf + 16) = 2;           /* ET_EXEC */
-    *(u16 *)(buf + 18) = 3;           /* EM_386 */
-    *(u32 *)(buf + 24) = vaddr;       /* entry */
-    *(u32 *)(buf + 28) = 52;          /* phoff */
-    *(u16 *)(buf + 42) = 32;          /* phentsize */
-    *(u16 *)(buf + 44) = 1;           /* phnum */
-    u8 *ph = buf + 52;
+    *(u16 *)(buf + 18) = 62;          /* EM_X86_64 */
+    *(u64 *)(buf + 24) = vaddr;       /* entry */
+    *(u64 *)(buf + 32) = ELF_PHOFF;   /* phoff */
+    *(u16 *)(buf + 54) = 56;          /* phentsize */
+    *(u16 *)(buf + 56) = 1;           /* phnum */
+
+    u8 *ph = buf + ELF_PHOFF;
     *(u32 *)(ph + 0)  = 1;            /* PT_LOAD */
-    *(u32 *)(ph + 4)  = 0;            /* offset */
-    *(u32 *)(ph + 8)  = vaddr;        /* vaddr */
-    *(u32 *)(ph + 16) = 16;           /* filesz */
-    *(u32 *)(ph + 20) = 16;           /* memsz */
+    *(u32 *)(ph + 4)  = 5;            /* read and execute */
+    *(u64 *)(ph + 8)  = 0;            /* offset */
+    *(u64 *)(ph + 16) = vaddr;        /* vaddr */
+    *(u64 *)(ph + 32) = 16;           /* filesz */
+    *(u64 *)(ph + 40) = 16;           /* memsz */
 }
 
 static void test_elf(void) {
-    u8 buf[128];
-    u32 entry = 0;
-    u32 dir = paging_new_directory();
+    u8 buf[192];
+    u64 entry = 0;
+    u64 dir = paging_new_directory();
     if (!dir) { ok("scratch address space", false); return; }
 
     ok("rejects a buffer too short to hold a header",
        elf_load(dir, buf, 8, &entry) == ELF_ERR_SHORT);
 
-    make_elf(buf, 0x40000000);
+    make_elf(buf, USER_SPACE_BASE + 0x40000000ull);
     buf[1] = 'X';
     ok("rejects a bad magic number", elf_load(dir, buf, sizeof(buf), &entry) == ELF_ERR_MAGIC);
 
-    make_elf(buf, 0x40000000);
-    buf[4] = 2;                                     /* claims 64 bit */
+    make_elf(buf, USER_SPACE_BASE + 0x40000000ull);
+    buf[4] = 1;                                     /* claims 32 bit */
     ok("rejects the wrong class", elf_load(dir, buf, sizeof(buf), &entry) == ELF_ERR_CLASS);
 
-    make_elf(buf, 0x40000000);
+    make_elf(buf, USER_SPACE_BASE + 0x40000000ull);
     *(u16 *)(buf + 18) = 40;                        /* ARM */
     ok("rejects another machine", elf_load(dir, buf, sizeof(buf), &entry) == ELF_ERR_TYPE);
 
@@ -391,14 +398,14 @@ static void test_elf(void) {
     ok("rejects a segment inside kernel memory",
        elf_load(dir, buf, sizeof(buf), &entry) == ELF_ERR_RANGE);
 
-    make_elf(buf, 0x40000000);
-    *(u32 *)(buf + 52 + 16) = 4096;                 /* filesz past the end */
+    make_elf(buf, USER_SPACE_BASE + 0x40000000ull);
+    *(u64 *)(buf + ELF_PHOFF + 32) = 4096;          /* filesz past the end */
     ok("rejects a segment that runs off the end of the file",
        elf_load(dir, buf, sizeof(buf), &entry) == ELF_ERR_OVERFLOW);
 
-    make_elf(buf, 0x40000000);
+    make_elf(buf, USER_SPACE_BASE + 0x40000000ull);
     ok("accepts a well formed header",
-       elf_load(dir, buf, sizeof(buf), &entry) == ELF_OK && entry == 0x40000000);
+       elf_load(dir, buf, sizeof(buf), &entry) == ELF_OK && entry == USER_SPACE_BASE + 0x40000000ull);
 
     paging_free_directory(dir);
 }
@@ -495,7 +502,7 @@ static void test_winsrv(void) {
     ok("its size comes back", winsrv_size(PID, h) == ((64 << 16) | 48));
     ok("another program cannot see the handle", winsrv_size(OTHER, h) == -1);
 
-    u32 ua = winsrv_surface(PID, h, paging_current_directory());
+    u64 ua = winsrv_surface(PID, h, paging_current_directory());
     ok("the surface maps into the caller", ua == WINSRV_SURFACE_BASE);
 
     /* Writing through the address the program was given must land in the
@@ -503,17 +510,17 @@ static void test_winsrv(void) {
        mapped for the kernel, so the physical address is readable here. */
     if (ua) {
         *(volatile u32 *)ua = 0xDEADBEEF;
-        u32 phys = virt_to_phys(ua);
+        u64 phys = virt_to_phys(ua);
         ok("it aliases the window pixels", phys && *(volatile u32 *)phys == 0xDEADBEEF);
 
         /* Pixel zero for the program has to be pixel zero for the window.
            Mapping the page before it puts every row out by a fixed amount,
            which draws a recognisable but wrong picture. */
         window_t *win = winsrv_window(PID, h);
-        ok("and starts exactly where the window does", win && phys == (u32)win->canvas);
+        ok("and starts exactly where the window does", win && phys == (u64)win->canvas);
 
         /* The last pixel must be inside the mapping too. */
-        u32 last = ua + (64u * 48u - 1) * 4;
+        u64 last = ua + (64ull * 48ull - 1) * 4;
         *(volatile u32 *)last = 0xFEEDFACE;
         ok("the whole surface is mapped",
            win && win->canvas[64 * 48 - 1] == 0xFEEDFACE);
@@ -661,7 +668,7 @@ static volatile u32 shared_counter;
 static volatile u32 seen_arg[SMP_MAX_CPUS];
 
 static void smp_add_work(void *arg) {
-    u32 who = (u32)arg;
+    u64 who = (u64)arg;
     if (who < SMP_MAX_CPUS) seen_arg[who] = who + 1;
     for (u32 i = 0; i < SMP_ADDS; i++) {
         spin_lock(&test_lock);
@@ -697,8 +704,8 @@ static void test_smp(void) {
     for (u32 i = 0; i < SMP_MAX_CPUS; i++) seen_arg[i] = 0;
 
     u32 dispatched = 0;
-    for (u32 i = 1; i < smp_cpu_count(); i++)
-        if (smp_run(i, smp_add_work, (void *)i)) dispatched++;
+    for (u64 i = 1; i < smp_cpu_count(); i++)
+        if (smp_run((u32)i, smp_add_work, (void *)i)) dispatched++;
     ok("work was accepted by every other processor", dispatched == helpers);
 
     smp_add_work((void *)0);              /* this processor does a share too */

@@ -17,10 +17,11 @@ filesize() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null || echo 
 mkdir -p ../build/user
 for src in *.c; do
   name="${src%.c}"
-  "$ZIG" cc -target x86-freestanding-none -mcpu=i686 \
+  "$ZIG" cc -target x86_64-freestanding-none \
     -ffreestanding -nostdlib -static -O2 -std=gnu11 \
     -fno-sanitize=undefined -fno-stack-protector -fno-stack-check \
-    -fno-builtin -mno-sse -mno-sse2 -mno-mmx -mno-80387 \
+    -fno-builtin -fno-pic -fno-pie -mcmodel=large \
+    -mno-sse -mno-sse2 -mno-mmx -mno-80387 -mno-red-zone \
     -Wall -Wextra \
     -Wl,-T,link.ld -Wl,--build-id=none \
     -o "../build/user/$name.elf" "$src"

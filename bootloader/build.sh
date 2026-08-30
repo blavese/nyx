@@ -30,7 +30,7 @@ echo "built build/mbr.bin ($(filesize build/mbr.bin) bytes)"
 
 # The SMP trampoline is the same kind of thing: 16-bit code that has to sit
 # at a fixed low address with no relocation, so it is a flat binary too.
-"$ZIG" cc -target x86-freestanding-none -mcpu=i686   -ffreestanding -nostdlib -static -c   -o build/trampoline.o bootloader/trampoline.S
+"$ZIG" cc -target x86_64-freestanding-none   -ffreestanding -nostdlib -static -c   -o build/trampoline.o bootloader/trampoline.S
 "$ZIG" ld.lld -T bootloader/trampoline.ld -o build/trampoline.elf build/trampoline.o
 python tools/flatten.py build/trampoline.elf build/trampoline.bin 0x8000
 echo "built build/trampoline.bin ($(filesize build/trampoline.bin) bytes)"

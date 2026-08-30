@@ -5,10 +5,12 @@
  * below would fault instead of reading back. */
 #include "nyx.h"
 
-static void hex(u32 v) {
+static void hex(u64 v) {
     const char *d = "0123456789abcdef";
     puts("0x");
-    for (int i = 28; i >= 0; i -= 4) putc(d[(v >> i) & 0xF]);
+    /* All sixteen digits: printing eight of them is what made a truncated
+       pointer look like a correct one. */
+    for (int i = 60; i >= 0; i -= 4) putc(d[(v >> i) & 0xF]);
 }
 
 int main(void);
@@ -28,7 +30,7 @@ int main(void) {
 
     u32 *px = win_surface(win);
     if (!px) { puts("wintest: no surface\n"); return 1; }
-    puts("wintest: surface at "); hex((u32)px); putc('\n');
+    puts("wintest: surface at "); hex((u64)px); putc('\n');
 
     /* Write the whole surface and read it back. A partial mapping would
        fault somewhere in the middle of this. */
