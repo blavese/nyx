@@ -86,9 +86,11 @@ int winsrv_create(u32 pid, const char *title, int cw, int ch) {
     u32 *pixels = (u32 *)(((u32)raw + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
     memset(pixels, 0, bytes);
 
-    /* Cascade windows so two programs do not open exactly on top of each
-       other. */
-    int x = 40 + handle * 26, y = 40 + handle * 22;
+    /* Cascade windows so two programs do not open on top of each other. The
+       vertical step has to clear a title bar, or the window underneath is
+       there but cannot be clicked on. */
+    int step = handle % 5;
+    int x = 40 + step * 48, y = 36 + step * 38;
     window_t *w = wm_create(title, x, y, cw, ch);
     if (!w) { kfree(raw); return -1; }
 

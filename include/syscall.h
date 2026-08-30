@@ -40,6 +40,20 @@
 #define SYS_DISCONNECT  28
 #define SYS_RESOLVE     29
 #define SYS_NETINFO     30
+#define SYS_SYSINFO      31
+
+/* What SYS_SYSINFO fills in: what the machine is, as far as a program is
+   allowed to know. */
+typedef struct {
+    u32 cpus_found, cpus_started;
+    u32 mem_total_kb, mem_used_kb;
+    u32 heap_total_kb, mem_free_kb;
+    u32 uptime_seconds;
+    u32 tasks;
+    u32 screen_w, screen_h;
+    u32 syscalls;
+    u32 disk_kb_free;
+} nyx_sysinfo_t;
 
 /* What SYS_STAT and SYS_READDIR fill in. Fixed layout: ring 3 reads this
    straight out of a buffer the kernel wrote. */

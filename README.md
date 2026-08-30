@@ -1,14 +1,16 @@
 # nyx
 
-A small operating system written from scratch for 32-bit x86. It boots from a
-multiboot loader, drives a framebuffer, manages its own memory, preempts its
-own tasks, keeps files on a FAT16 disk, talks to the internet, and runs a
-desktop whose programs are real ring 3 processes.
+A small operating system written from scratch for 32-bit x86. It boots itself
+off a disc or a USB stick, drives a framebuffer, manages its own memory,
+preempts its own tasks, starts the machine's other processors, keeps files in
+directories on a FAT16 disk, talks to the internet, and runs a desktop whose
+programs are real ring 3 processes.
 
 ![the nyx desktop](docs/desktop.png)
 
-It is not a clone of anything. About 6,500 lines of C and assembly, no libc,
-no third-party code, no runtime dependencies.
+It is not a clone of anything. About 11,900 lines of C and assembly, no libc,
+no third-party code, no runtime dependencies, and nothing borrowed from
+another kernel.
 
 ## running it on Windows
 
@@ -29,16 +31,19 @@ Something to try once it boots:
 
     desktop
 
-That opens a window manager with a paint program. Drag a title bar to move a
-window, click one to bring it forward, pick a colour and draw. Escape returns
-to the shell.
+A terminal opens. Click the wallpaper, or the badge in the corner, for the
+launcher: paint, settings, and what the machine is made of. Drag a title bar
+to move a window, click one to bring it forward, Escape returns to the shell.
 
-    exec hello.elf
-    bg count.elf
-    ps
+Everything on that desktop except the system info window is a separate
+program running in ring 3. Settings cannot reach into the window manager at
+all; it writes a file, and the window manager reads it, which is why the
+desktop changes colour while the settings window is still open.
 
-Those are separate executables, compiled on their own and loaded from the disk.
-They run in ring 3 and reach the kernel only through system calls.
+    mkdir docs
+    cd docs
+    write notes.txt hello
+    cat notes.txt
 
     dhcp
     fetch example.com / page.html
@@ -46,6 +51,24 @@ They run in ring 3 and reach the kernel only through system calls.
 
 That gets an address from the network, downloads a live web page over TCP, and
 saves it to a disk that survives closing the window.
+
+## running it on a real machine
+
+Download **nyx.iso**, write it to a USB stick or burn it to a disc, and boot
+from it. The same file works both ways: a BIOS booting from a disc reads the
+El Torito record, one booting from a stick reads the partition table, and both
+end up in the same bootloader.
+
+That bootloader is `bootloader/cdboot.S` and it is ours. Nothing else is
+involved: no GRUB, no syslinux, no isohybrid. It turns on the A20 gate, asks
+the firmware what memory exists, reads the kernel off the boot device and
+copies it above 1 MiB through unreal mode, then hands over the way a multiboot
+loader is supposed to.
+
+It runs entirely from the disc and writes nothing unless there is a hard disk
+attached, in which case it will use it. **Be careful with that on a machine
+whose disk you care about**: a blank or unformatted one gets formatted on
+first boot.
 
 ## running it from source
 
@@ -55,8 +78,17 @@ i686-elf toolchain to build first.
     ./run.sh          boot in a window
     ./run.sh -t       boot headless, console on stdout
     ./run.sh -T       run the built-in self test, exit code is the result
+    ./run.sh -i       build a bootable image and boot it through our own
+                      bootloader, the way a real machine would
 
-`run.sh` creates a disk image and attaches a network card automatically.
+`run.sh` creates a disk image and attaches a network card automatically. The
+first three hand the kernel to QEMU with `-kernel`, which means QEMU is doing
+the bootloader's job; `-i` is the one that does not.
+
+    python tools/mkiso.py       write build/nyx.iso
+    bash tools/iso_test.sh      boot it as a disc and as a stick
+    bash tools/shell_test.sh    type at the shell over the serial line
+    python tools/shotcheck.py   use the desktop and look at the screen
 
 The Windows launcher lives in `launcher/` and is built with
 `dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true`.
@@ -66,6 +98,13 @@ It embeds `build/nyx.elf` and a starter disk, so build the kernel and run
 ## what it actually does
 
 **Boot.** A multiboot header gets it loaded at 1 MiB in 32-bit protected mode.
+`bootloader/cdboot.S` is what puts it there on a real machine: the BIOS drops
+it at 0x7C00 in 16-bit real mode, and it opens the A20 gate, asks the firmware
+for the memory map, reads the kernel off the boot device in 32 KiB chunks and
+copies each one above 1 MiB through unreal mode, which is the only way to
+write there without giving up the BIOS calls it still needs. It handles both
+sector sizes, because a disc reports 2048 bytes and a stick reports 512, and
+INT 13h counts in whatever the device uses.
 The bootloader's memory map is read to find out how much RAM exists.
 
 **Descriptor tables.** A flat GDT (kernel and user code/data) plus a TSS, which
@@ -132,7 +171,18 @@ card in one go, because compositing directly in video memory over PCI is
 visibly slow. The console is redrawn on top of that with a bitmap font, so
 everything that already printed kept working.
 
-**Programs.** Ring 3, its own address space per process, and thirteen system
+**Other processors.** A PC boots with one CPU running and does not say the
+others exist, so `acpi.c` goes and reads the firmware tables to find them and
+`smp.c` starts each one with an INIT signal followed by a startup signal
+carrying a page number. It begins executing there in real mode with no stack
+and no paging, which is what `bootloader/trampoline.S` is for. What they do
+afterwards is a decision rather than a requirement: sharing the scheduler
+would mean a lock on the heap, the task list, the filesystem and every driver,
+so instead each one waits for a function to be handed to it. The boot
+processor still owns the kernel; the others own nothing until they are given
+something.
+
+**Programs.** Ring 3, its own address space per process, and thirty-one system
 calls through int 0x80. An ELF32 loader maps each PT_LOAD segment where the
 file asks and refuses anything that would land in kernel memory. `userland/`
 holds programs built entirely separately: the only thing they share with the
@@ -162,8 +212,19 @@ reports in jumps and without it a quick stroke is a row of dots.
 shift/caps/ctrl, PS/2 mouse with a drawn pointer, PIT at 100 Hz, and a 16550
 serial port driven by IRQ4.
 
+**The desktop's programs.** The terminal, paint and settings are ordinary ELF
+executables in ring 3. The terminal is a shell that is not part of the kernel:
+listing a directory, reading a file, writing one and fetching a page over TCP
+all go through int 0x80, and its `get` command does an HTTP GET from user
+space. Settings is the interesting one, because it changes how the desktop
+looks without being able to reach the window manager at all. It writes
+`/nyx.cfg`, a plain "key value" file, and the window manager re-reads that four
+times a second. Anything the window can do can also be done with the shell's
+`write` command.
+
 **Shell.** Reads from the keyboard or the serial line, whichever produces a
-character first, so a person can type at it and a script can pipe into it.
+character first, so a person can type at it and a script can pipe into it. It
+is still the kernel's own, on the console; the one in a window is a program.
 
 ## testing
 
@@ -255,17 +316,25 @@ Being explicit about the boundary, because "operating system" covers a very
 large range:
 
 - **No fork or exec in the Unix sense.** A program is loaded and run; it
-  cannot start another or replace itself.
-- **Thirteen system calls.** Enough to print, read a file, sleep, exit and own
-  a window. A program cannot write a file or open a socket.
-- **Flat filesystem**, no directories, and only 8.3 names.
+  cannot start another or replace itself. The launcher and the shell start
+  programs because they are the kernel, not because a program can.
+- **Thirty-one system calls.** Enough to print, walk directories, read and
+  write files, open one TCP connection, sleep, exit and own a window. There is
+  no signal, no pipe, no memory mapping and no way to wait on anything.
+- **8.3 names only.** Directories work and nest, but a file is eight
+  characters and an extension, because that is what FAT16 stores without long
+  name entries.
 - **No shared libraries**, no dynamic linking, no relocation: programs are
   static and loaded at a fixed address.
 - **No window resizing**, and eight windows at once. A surface is allocated
   once, at the size the window was created with.
-- **The `about` window is still kernel code**, because it reports on the
-  allocator, the scheduler and the clock and no system call exposes those.
+- **The system info window is still kernel code**, because it reports on the
+  allocator, the scheduler and the clock, and no system call exposes those.
   Every other window on the desktop belongs to a ring 3 process.
+- **The other processors do not run tasks.** They are started, they execute
+  work handed to them and they share a lock, but the scheduler runs on the
+  boot processor alone. Spreading it would mean a lock on the heap, the task
+  list, the filesystem and every driver.
 - **TCP handles one connection at a time.** It retransmits with exponential
   backoff and gives up after six tries, but there is no congestion control, no
   window scaling and no selective acknowledgement.
@@ -275,9 +344,13 @@ large range:
   not forward ICMP to the wider internet without elevated privileges, so
   pinging an outside address times out even though DNS and TCP to that same
   address work.
-- **32-bit only**, single processor, no SMP and no APIC.
+- **BIOS only.** The bootloader is 16-bit real mode code that a UEFI machine
+  will only run through its compatibility support module, and newer firmware
+  has stopped shipping one.
+- **32-bit only.** No long mode, so no more than 4 GiB of address space, and
+  the whole thing would have to be ported to reach it.
 
-It is a real kernel in that it boots on the bare machine, drives its own
+It is a real kernel in that it boots itself on a bare machine, drives its own
 hardware, and can fetch a file from a real server and keep it on a real disk.
 It is not something you would run anything important on, and it is several
 orders of magnitude away from Linux, which is roughly 30 million lines.
@@ -313,10 +386,15 @@ orders of magnitude away from Linux, which is roughly 30 million lines.
     kernel/elf.c       elf32 loader
     kernel/syscall.c   the system call table
     kernel/user.c      building and launching ring 3 processes
-    kernel/wm.c        the window manager
+    kernel/wm.c        the window manager and the launcher
     kernel/winsrv.c    handing window surfaces across to ring 3
+    kernel/theme.c     the desktop's appearance, and the file it lives in
     kernel/builtin.S   the user programs, pasted into the kernel image
-    kernel/apps.c      the about window
+    kernel/apps.c      the system info window
+    kernel/vfs.c       one namespace over the built-ins, the disk and memory
+    kernel/acpi.c      reading the firmware tables to find the processors
+    kernel/smp.c       starting them and handing them work
+    bootloader/        our own bootloader, and where a second cpu starts
     kernel/gfx.c       drawing into off-screen surfaces
     kernel/vga.c       text console
     kernel/serial.c    16550 uart, interrupt driven
@@ -326,8 +404,10 @@ orders of magnitude away from Linux, which is roughly 30 million lines.
     kernel/welcome.c   the first-run text and the guided tour
     kernel/selftest.c  the boot-time test suite
     kernel/divide.c    64-bit division helpers libgcc would normally provide
-    userland/          programs, built separately from the kernel
-    tools/             build checks, the font generator, the FAT reader
+    userland/          programs, built separately from the kernel:
+                       a terminal, paint, settings and three small tests
+    tools/             build checks, the font generator, the FAT reader,
+                       the image writer and the three test harnesses
     launcher/          the Windows launcher (C#/WPF)
 
 ## license

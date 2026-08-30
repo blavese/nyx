@@ -183,6 +183,7 @@ static void cmd_help(void) {
     say("  rmdir NAME       remove an empty one");
     say("  stat PATH        size and kind");
     say("  net              network status");
+    say("  cpus             processors, memory and uptime");
     say("  get HOST [PATH] [FILE]   download over http");
     say("  echo TEXT        print it back");
     say("  clear            empty the scrollback");
@@ -345,6 +346,27 @@ static void cmd_get(int argc, char **argv) {
     }
 }
 
+static void cmd_cpus(void) {
+    nyx_sysinfo si;
+    if (sysinfo(&si) != 0) { err("cannot read the machine"); return; }
+
+    w_reset(); w_str("processors "); w_num(si.cpus_started);
+    w_str(" of "); w_num(si.cpus_found); w_str(" started"); say(work);
+    if (si.cpus_found > 1)
+        dim("the kernel runs on one; the rest take work handed to them");
+
+    w_reset(); w_str("memory     "); w_num(si.mem_used_kb);
+    w_str(" of "); w_num(si.mem_total_kb); w_str(" KiB used"); say(work);
+    w_reset(); w_str("heap       "); w_num(si.heap_total_kb); w_str(" KiB"); say(work);
+    w_reset(); w_str("screen     "); w_num(si.screen_w); w_str("x");
+    w_num(si.screen_h); say(work);
+    w_reset(); w_str("tasks      "); w_num(si.tasks); say(work);
+    w_reset(); w_str("uptime     "); w_num(si.uptime_seconds); w_str(" seconds"); say(work);
+    w_reset(); w_str("disk free  "); w_num(si.disk_kb_free); w_str(" KiB"); say(work);
+    w_reset(); w_str("syscalls   "); w_num(si.syscalls);
+    w_str(" served since boot"); say(work);
+}
+
 static void cmd_about(void) {
     print("nyx terminal", ACCENT);
     say("A shell that is not part of the kernel.");
@@ -409,6 +431,7 @@ static void run(char *cmdline) {
         if (argc < 2) err("usage: stat PATH"); else cmd_stat(argv[1]);
     }
     else if (!strcmp(c, "net")) cmd_net();
+    else if (!strcmp(c, "cpus")) cmd_cpus();
     else if (!strcmp(c, "get")) cmd_get(argc, argv);
     else if (!strcmp(c, "echo")) {
         char text_buf[COLS + 1];
