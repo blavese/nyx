@@ -25,7 +25,8 @@
 .align 16
 .ascii "NYXKERN"
 .byte 0
-.quad _start64
+.quad _start64                   /* for a loader already in long mode */
+.quad _start32                   /* for one still in 32-bit protected mode */
 
 .set ALIGN,    1<<0
 .set MEMINFO,  1<<1
@@ -98,7 +99,22 @@ _start:
        somewhere memory can hold. */
     mov %eax, mb_magic
     mov %ebx, mb_info
+    movl $0, from_handoff
+    jmp go_long
 
+/* Where a 32-bit bootloader of ours arrives, having built a handoff
+   structure itself and left a pointer to it in ebx. */
+.global _start32
+.type _start32, @function
+_start32:
+    cli
+    mov $stack_top, %esp
+    xor %ebp, %ebp
+
+    mov %ebx, mb_info
+    movl $1, from_handoff
+
+go_long:
     call check_long_mode
     call build_tables
 
@@ -206,15 +222,23 @@ long_start:
     mov $stack_top, %rsp
     xor %rbp, %rbp
 
-    /* kmain_multiboot(magic, info) builds a handoff out of what the loader
-       left and calls the same entry the UEFI path uses. */
+    cmpl    $0, from_handoff(%rip)
+    jne     1f
+
+    /* A multiboot loader: build a handoff out of what it left, then go
+       through the same door as everything else. */
     mov mb_magic(%rip), %edi
     mov mb_info(%rip), %esi
     call kmain_multiboot
+    jmp 2f
 
-1:  cli
+1:  /* One of ours: it built the handoff already. */
+    mov mb_info(%rip), %edi
+    call kmain
+
+2:  cli
     hlt
-    jmp 1b
+    jmp 2b
 
 /* Where uefi/loader.c arrives: already in long mode, already paged, with a
    pointer to the handoff in rdi. */
@@ -230,6 +254,7 @@ _start64:
     jmp 1b
 
 .section .data
-mb_magic: .long 0
-mb_info:  .long 0
+mb_magic:     .long 0
+mb_info:      .long 0
+from_handoff: .long 0
 msg_no64: .asciz "nyx needs a 64-bit processor"

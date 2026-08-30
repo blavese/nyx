@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
-"""Builds a bootable ISO 9660 image containing nyx.
+"""Builds one bootable image that starts on any of four paths.
 
-There is no third-party tool involved. The image is written from the
-specifications: ISO 9660 for the layout, El Torito for the boot record, and
-an MBR partition table over the top so the same file also boots when it is
-written directly to a USB stick.
+There is no third-party tool involved: no xorriso, no mtools, no isohybrid.
+The image is written from the specifications, and the EFI System Partition
+inside it is built by tools/mkfat.py, which is also ours.
+
+The four ways in:
+
+    BIOS, from a disc    El Torito catalog, first entry
+    BIOS, from a stick   the MBR at the front of the image
+    UEFI, from a disc    El Torito catalog, second entry, platform 0xEF
+    UEFI, from a stick   an MBR partition marked as an EFI system partition
+
+The last two both point at the same embedded FAT filesystem, because a UEFI
+machine will not run a boot sector and wants a file called BOOTX64.EFI on a
+volume it can read.
 
 Layout, in 2048 byte sectors:
 
@@ -16,8 +26,9 @@ Layout, in 2048 byte sectors:
     20      path table, little endian
     21      path table, big endian
     22      root directory
-    23      the bootloader, which the firmware loads at 0x7C00
-    ...     the kernel, flattened, which the bootloader loads at 1 MiB
+    23      the BIOS bootloader, which the firmware loads at 0x7C00
+    ...     the EFI system partition, a FAT16 filesystem
+    ...     the kernel, flattened, which the BIOS bootloader loads at 1 MiB
 
   python tools/mkiso.py [OUT.iso]
 """
@@ -129,9 +140,16 @@ def terminator():
     return bytes(d)
 
 
-def boot_catalog(loader_lba, loader_sectors_512):
-    """The validation entry has to make the first 32 bytes sum to zero as
-    16-bit words, which is the only integrity check in the format."""
+def boot_catalog(loader_lba, loader_sectors_512, esp_lba, esp_sectors_512):
+    """Two platforms in one catalog.
+
+    The first two entries are the ones every El Torito image has: a validation
+    entry and the default entry, which firmware reads as the x86 one. A UEFI
+    machine ignores those and looks for a section header naming platform 0xEF,
+    which is what the second pair is.
+
+    The validation entry has to make the first 32 bytes sum to zero as 16-bit
+    words, which is the only integrity check in the format."""
     val = bytearray(32)
     val[0] = 1                                   # header id
     val[1] = 0                                   # x86
@@ -141,15 +159,30 @@ def boot_catalog(loader_lba, loader_sectors_512):
     total = sum(struct.unpack("<16H", bytes(val)))
     struct.pack_into("<H", val, 28, (-total) & 0xFFFF)
 
-    entry = bytearray(32)
-    entry[0] = 0x88                              # bootable
-    entry[1] = 0                                 # no emulation
-    struct.pack_into("<H", entry, 2, 0)          # load segment 0 means 0x7C00
-    entry[4] = 0                                 # system type
-    struct.pack_into("<H", entry, 6, loader_sectors_512)
-    struct.pack_into("<I", entry, 8, loader_lba)
+    bios = bytearray(32)
+    bios[0] = 0x88                               # bootable
+    bios[1] = 0                                  # no emulation
+    struct.pack_into("<H", bios, 2, 0)           # load segment 0 means 0x7C00
+    bios[4] = 0                                  # system type
+    struct.pack_into("<H", bios, 6, loader_sectors_512)
+    struct.pack_into("<I", bios, 8, loader_lba)
 
-    return pad(bytes(val) + bytes(entry), SECTOR)
+    # A section header, marked final, introducing one EFI entry.
+    header = bytearray(32)
+    header[0] = 0x91                             # final section header
+    header[1] = 0xEF                             # EFI
+    struct.pack_into("<H", header, 2, 1)         # one entry follows
+    header[4:32] = b"efi".ljust(28, b"\x00")
+
+    efi = bytearray(32)
+    efi[0] = 0x88
+    efi[1] = 0                                   # no emulation
+    struct.pack_into("<H", efi, 2, 0)
+    efi[4] = 0
+    struct.pack_into("<H", efi, 6, esp_sectors_512 & 0xFFFF)
+    struct.pack_into("<I", efi, 8, esp_lba)
+
+    return pad(bytes(val) + bytes(bios) + bytes(header) + bytes(efi), SECTOR)
 
 
 def path_tables(root_extent):
@@ -201,7 +234,8 @@ def patch_loader(loader, payload_lba, payload_bytes, entry, load_addr,
     return bytes(out)
 
 
-def hybrid_mbr(code, total_sectors_512, loader_lba_512, loader_sectors_512):
+def hybrid_mbr(code, total_sectors_512, loader_lba_512, loader_sectors_512,
+               esp_lba_512, esp_sectors_512):
     """The first 512 bytes, holding boot code and a partition table.
 
     A BIOS booting from a disc reads the El Torito catalog; one booting from
@@ -236,6 +270,19 @@ def hybrid_mbr(code, total_sectors_512, loader_lba_512, loader_sectors_512):
     struct.pack_into("<I", part, 12, total_sectors_512)
     mbr[446:462] = part
 
+    # A second partition describing the EFI system partition, so firmware
+    # booting this from a stick finds a volume it can read. Type 0xEF is what
+    # says "this is an ESP"; without it a UEFI machine sees a disc image and
+    # nothing it recognises.
+    esp = bytearray(16)
+    esp[0] = 0x00                                   # not the active one
+    esp[1:4] = bytes([0xFE, 0xFF, 0xFF])
+    esp[4] = 0xEF
+    esp[5:8] = bytes([0xFE, 0xFF, 0xFF])
+    struct.pack_into("<I", esp, 8, esp_lba_512)
+    struct.pack_into("<I", esp, 12, esp_sectors_512)
+    mbr[462:478] = esp
+
     mbr[510] = 0x55
     mbr[511] = 0xAA
     return bytes(mbr)
@@ -264,8 +311,21 @@ def main():
     payload = open(payload_path, "rb").read()
     entry = entry_point(kernel_elf)
 
+    # The EFI half: a FAT filesystem holding the loader firmware looks for and
+    # the kernel it loads. Built by tools/mkfat.py, which is ours.
+    esp_path = os.path.join(BUILD, "esp.img")
+    efi_path = os.path.join(BUILD, "BOOTX64.EFI")
+    subprocess.run([sys.executable, os.path.join(ROOT, "tools", "mkfat.py"),
+                    esp_path, "4096",
+                    efi_path + ":EFI/BOOT/BOOTX64.EFI",
+                    payload_path + ":nyx.bin"],
+                   cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
+    esp = open(esp_path, "rb").read()
+
     loader_sectors = sectors_for(len(loader))
-    payload_lba = LOADER_LBA + loader_sectors
+    esp_lba = LOADER_LBA + loader_sectors
+    esp_sectors = sectors_for(len(esp))
+    payload_lba = esp_lba + esp_sectors
     payload_sectors = sectors_for(len(payload))
     total_sectors = payload_lba + payload_sectors
     # Round the image up so a read that overshoots slightly still lands
@@ -289,27 +349,32 @@ def main():
                                            SECTOR, table_size))
     put(BRVD_LBA, boot_record_descriptor(CATALOG_LBA))
     put(TERM_LBA, terminator())
-    put(CATALOG_LBA, boot_catalog(LOADER_LBA, sectors_for(len(loader)) * 4))
+    put(CATALOG_LBA, boot_catalog(LOADER_LBA, sectors_for(len(loader)) * 4,
+                                  esp_lba, esp_sectors * 4))
     put(PATH_L_LBA, pad(le_table, SECTOR))
     put(PATH_M_LBA, pad(be_table, SECTOR))
     put(ROOT_DIR_LBA, root)
     put(LOADER_LBA, loader)
+    put(esp_lba, esp)
     put(payload_lba, payload)
 
     mbr_code = open(os.path.join(BUILD, "mbr.bin"), "rb").read()
     image[0:512] = hybrid_mbr(mbr_code, total_sectors * 4,
-                              LOADER_LBA * 4, sectors_for(len(loader)) * 4)
+                              LOADER_LBA * 4, sectors_for(len(loader)) * 4,
+                              esp_lba * 4, esp_sectors * 4)
 
     open(out_path, "wb").write(image)
 
     print("wrote %s" % out_path)
     print("  loader     %d bytes at sector %d" % (len(loader), LOADER_LBA))
+    print("  esp        %d KiB at sector %d, FAT16 with BOOTX64.EFI"
+          % (len(esp) // 1024, esp_lba))
     print("  kernel     %d bytes at sector %d, entry %#x"
           % (len(payload), payload_lba, entry))
     print("  image      %d sectors, %d KiB"
           % (total_sectors, total_sectors * SECTOR // 1024))
-    print("  boots from a disc through El Torito, and from a stick through "
-          "the MBR")
+    print("  bios: El Torito and the MBR   uefi: the EFI catalog entry and "
+          "the ESP partition")
     return 0
 
 

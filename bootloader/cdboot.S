@@ -47,11 +47,27 @@ patch_entry:    .long 0          /* where to jump once it is in memory */
 patch_load:     .long 0x100000   /* where the payload belongs */
 patch_self:     .long 0          /* the sector this file itself came from */
 
-/* Where things go while we work. All of it is scratch below 0x7C00, which
-   the BIOS has already finished with. */
-.set MBI_ADDR,     0x0500
-.set MMAP_ADDR,    0x0600
-.set CMDLINE_ADDR, 0x0E00
+/* Where things go while we work.
+ *
+ * The handoff structure is what the kernel is actually given, and it is the
+ * same one the UEFI loader builds: the kernel has one entry contract and does
+ * not find out which loader started it. It is too big to sit below 0x7C00, so
+ * it goes at 0x70000, which real mode reaches through a segment.
+ *
+ * The offsets are include/handoff.h laid out by hand, because assembly cannot
+ * include a C header. If that structure changes, these change with it. */
+.set HANDOFF_SEG,      0x7000     /* 0x70000 */
+.set H_MAGIC,          0
+.set H_FB_BASE,        8
+.set H_KERNEL_BASE,    32
+.set H_KERNEL_SIZE,    40
+.set H_RSDP,           48
+.set H_REGION_COUNT,   56
+.set H_REGIONS,        64
+.set H_LOADER,         64 + 128 * 24
+.set REGION_SIZE,      24
+.set MAX_REGIONS,      128
+
 .set BUFFER_SEG,   0x1000        /* 0x10000, the disk read buffer */
 /* The boot drive, parked outside this file. Stage one reads the whole file
    over itself, so anything it needs afterwards cannot be stored inside it:
@@ -153,10 +169,10 @@ real_start:
 
     call    enable_a20
     call    probe_geometry
+    call    zero_handoff
     call    read_memory_map
     call    enter_unreal
     call    load_payload
-    call    build_mbi
 
     movw    $msg_go, %si
     call    print
@@ -302,41 +318,59 @@ probe_geometry:
     movw    %ax, chunk_sectors
     ret
 
-/* Asks the firmware what memory exists and writes it out in the format the
-   multiboot specification uses: a 4 byte size in front of each 20 byte
-   entry. Without this the kernel has no idea how much RAM it has. */
+/* Asks the firmware what memory exists and writes it straight into the
+   handoff.
+ *
+ * The firmware's answer and the kernel's structure happen to agree for the
+ * first twenty bytes: an eight byte base, an eight byte length and a four
+ * byte kind. So the call writes into the slot directly and only the padding
+ * and the kind need touching afterwards. */
 read_memory_map:
-    movw    $MMAP_ADDR, %di
+    pushw   %es
+    movw    $HANDOFF_SEG, %ax
+    movw    %ax, %es
+
+    movw    $H_REGIONS, %di
     xorl    %ebx, %ebx
-    xorl    %ebp, %ebp           /* running total of bytes written */
+    xorl    %ebp, %ebp           /* how many regions written */
 
 1:  movl    $20, %ecx
     movl    $0x0000E820, %eax
     movl    $0x534D4150, %edx    /* 'SMAP' */
-    pushw   %di
-    addw    $4, %di              /* leave room for the size field */
     int     $0x15
-    popw    %di
     jc      2f
     cmpl    $0x534D4150, %eax
     jne     2f
 
-    movl    $20, (%di)           /* the size the kernel steps over */
-    addw    $24, %di
-    addl    $24, %ebp
+    /* The firmware's kinds are not ours. Usable and ACPI-reclaimable happen
+       to share a number; everything else is something the kernel must not
+       hand out. */
+    movl    %es:16(%di), %eax
+    cmpl    $1, %eax
+    je      4f
+    cmpl    $3, %eax
+    je      4f
+    movl    $2, %es:16(%di)
+4:  movl    $0, %es:20(%di)      /* the padding, which nothing sets for us */
+
+    addw    $REGION_SIZE, %di
+    incl    %ebp
 
     testl   %ebx, %ebx
     jz      3f
-    cmpw    $0x0E00 - 24, %di    /* out of room; stop rather than overrun */
+    cmpl    $MAX_REGIONS, %ebp
     jae     3f
     jmp     1b
 
 2:  testl   %ebp, %ebp
     jnz     3f
+    popw    %es
     movw    $msg_nomem, %si
     jmp     die
 
-3:  movl    %ebp, mmap_bytes
+3:  movl    %ebp, %es:H_REGION_COUNT
+    movl    $0, %es:H_REGION_COUNT + 4
+    popw    %es
     ret
 
 /* Enters protected mode just long enough to give FS a 4 GiB limit, then
@@ -434,52 +468,47 @@ read_failed:
     movw    $msg_readfail, %si
     jmp     die
 
-/* Fills in the structure the kernel is handed in EBX. Only the flags it
-   actually reads are set: the memory map, the totals, and a command line,
-   which is how `selftest` would be passed if anyone wanted to. */
-build_mbi:
-    /* zero it */
-    movw    $MBI_ADDR, %di
-    movw    $88, %cx
+/* Clears the handoff and fills in everything except the memory map, which
+   read_memory_map writes directly.
+ *
+ * The framebuffer is left at zero on purpose: this machine has a BIOS, so the
+ * kernel can set a mode itself through the VBE ports, and it will pick one
+   rather than being told. The ACPI pointer is left at zero too, because on a
+   BIOS machine the kernel's own search of low memory finds it. */
+zero_handoff:
+    pushw   %es
+    movw    $HANDOFF_SEG, %ax
+    movw    %ax, %es
+
+    xorw    %di, %di
+    movw    $(H_LOADER + 160), %cx    /* the whole structure, in bytes */
     xorb    %al, %al
-1:  movb    %al, (%di)
+1:  movb    %al, %es:(%di)
     incw    %di
     decw    %cx
     jnz     1b
 
-    movw    $MBI_ADDR, %di
-    movl    $((1 << 0) | (1 << 2) | (1 << 6)), (%di)     /* mem, cmdline, mmap */
-    movl    $640, 4(%di)                                  /* mem_lower, KiB */
-    movl    $0, 8(%di)                                    /* filled in below */
-    movl    $CMDLINE_ADDR, 16(%di)
-    movl    mmap_bytes, %eax
-    movl    %eax, 44(%di)
-    movl    $MMAP_ADDR, 48(%di)
+    /* The magic the kernel checks before it trusts any of this. */
+    /* HANDOFF_MAGIC, low half first, which is how it lands in memory. */
+    movl    $0x3448464F, %es:H_MAGIC
+    movl    $0x4E595836, %es:H_MAGIC + 4
 
-    /* mem_upper is the size of the first usable run above 1 MiB, in KiB.
-       The kernel prefers the map and only falls back to this. */
-    movw    $MMAP_ADDR, %si
-    xorl    %edx, %edx
-2:  movl    mmap_bytes, %eax
-    movw    %si, %bx
-    subw    $MMAP_ADDR, %bx
-    cmpl    %eax, %ebx
-    jae     3f
-    cmpl    $1, 20(%si)          /* type 1 is usable RAM */
-    jne     4f
-    cmpl    $0x100000, 4(%si)
-    jb      4f
-    movl    12(%si), %edx        /* low half of the length */
-    shrl    $10, %edx
-    jmp     3f
-4:  addw    $24, %si
-    jmp     2b
-3:  movw    $MBI_ADDR, %di
-    movl    %edx, 8(%di)
+    movl    $0x00100000, %es:H_KERNEL_BASE
+    movl    $0, %es:H_KERNEL_BASE + 4
+    movl    patch_bytes, %eax
+    movl    %eax, %es:H_KERNEL_SIZE
+    movl    $0, %es:H_KERNEL_SIZE + 4
 
-    /* An empty command line, so the pointer is valid rather than dangling. */
-    movw    $CMDLINE_ADDR, %di
-    movb    $0, (%di)
+    /* Which loader this was, for the boot banner. */
+    movw    $H_LOADER, %di
+    movw    $loader_name, %si
+2:  lodsb
+    movb    %al, %es:(%di)
+    incw    %di
+    testb   %al, %al
+    jnz     2b
+
+    popw    %es
     ret
 
 /* --- protected mode ----------------------------------------------------- */
@@ -494,9 +523,13 @@ protected:
     movw    %ax, %ss
     movl    $0x7C00, %esp
 
-    movl    $0x2BADB002, %eax    /* what a multiboot kernel checks for */
-    movl    $MBI_ADDR, %ebx
-    movl    patch_entry, %ecx
+    /* The kernel states its entry points in the first bytes of its own
+       image rather than being loaded at a fixed one: the second is for a
+       loader still in 32-bit protected mode, which is what this is. */
+    movl    $0x00100000, %esi
+    movl    16(%esi), %ecx               /* entry32 */
+
+    movl    $(HANDOFF_SEG * 16), %ebx    /* the handoff, in ebx */
     jmp     *%ecx
 
 /* --- data --------------------------------------------------------------- */
@@ -546,6 +579,7 @@ gdt_desc:
     .word   gdt_end - gdt - 1
     .long   gdt
 
+loader_name:  .asciz "bios"
 msg_boot:     .asciz "nyx bootloader\r\nloading "
 msg_dot:      .asciz "."
 msg_nl:       .asciz "\r\n"
