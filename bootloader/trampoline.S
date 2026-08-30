@@ -10,10 +10,16 @@
  * address inside it has to be absolute, which is exactly the situation the
  * bootloader is in, so it is built the same way.
  *
+ * Getting to long mode from here is the same sequence boot.S uses, and for
+ * the same reason: the processor will not enter it without paging already
+ * on. The difference is that the tables already exist. The boot processor
+ * hands over its own, so this one shares the kernel's address space from its
+ * first instruction rather than building a second copy of it.
+ *
  * The boot processor fills in the parameter block below before sending the
- * startup signal: which page directory to use, which stack this processor
- * gets, and where in the kernel to go. Startup is serialised, so one stack
- * slot is enough.
+ * startup signal: which page tables to use, which stack this processor gets,
+ * and where in the kernel to go. Startup is serialised, so one slot is
+ * enough.
  */
 .code16
 .section .text
@@ -29,15 +35,36 @@ _start:
     movw    %ax, %es
     movw    %ax, %ss
 
-    lgdt    BASE + (gdt_desc - _start)
+    /* PAE first: long mode will not engage without it. */
+    movl    %cr4, %eax
+    orl     $(1 << 5), %eax
+    movl    %eax, %cr4
 
+    /* The boot processor's page tables, so this processor sees the kernel
+       exactly as the one that started it does. */
+    movl    BASE + (param_cr3 - _start), %eax
+    movl    %eax, %cr3
+
+    /* Ask for long mode. */
+    movl    $0xC0000080, %ecx
+    rdmsr
+    orl     $(1 << 8), %eax
+    wrmsr
+
+    /* Protected mode and paging go on in the same write. Paging cannot be
+       enabled while the processor is still in real mode, and this one starts
+       there, so setting the two bits separately would leave the first write
+       either ignored or faulting. boot.S does not have this problem because
+       a multiboot loader has already entered protected mode for it. */
     movl    %cr0, %eax
-    orl     $1, %eax
+    orl     $((1 << 31) | 1), %eax
     movl    %eax, %cr0
-    ljmpl   $0x08, $(BASE + (protected - _start))
 
-.code32
-protected:
+    lgdt    BASE + (gdt_desc - _start)
+    ljmpl   $0x08, $(BASE + (long_mode - _start))
+
+.code64
+long_mode:
     movw    $0x10, %ax
     movw    %ax, %ds
     movw    %ax, %es
@@ -45,24 +72,15 @@ protected:
     movw    %ax, %gs
     movw    %ax, %ss
 
-    /* Share the boot processor's address space. Everything this CPU is about
-       to touch is already mapped there, including the kernel it is going to
-       jump into. */
-    movl    BASE + (param_cr3 - _start), %eax
-    movl    %eax, %cr3
-    movl    %cr0, %eax
-    orl     $0x80000000, %eax
-    movl    %eax, %cr0
-
     /* Its own stack, handed over by whoever started it. */
-    movl    BASE + (param_stack - _start), %esp
-    xorl    %ebp, %ebp
+    movq    BASE + (param_stack - _start), %rsp
+    xorq    %rbp, %rbp
 
-    /* Say which processor this is, then leave the trampoline for good. */
-    movl    BASE + (param_arg - _start), %eax
-    pushl   %eax
-    movl    BASE + (param_entry - _start), %eax
-    call    *%eax
+    /* Say which processor this is, then leave the trampoline for good. The
+       argument goes in rdi, which is where a System V function looks. */
+    movq    BASE + (param_arg - _start), %rdi
+    movq    BASE + (param_entry - _start), %rax
+    call    *%rax
 
     /* The entry point is not expected to return. */
 1:  hlt
@@ -71,23 +89,23 @@ protected:
 .align 8
 gdt:
     .quad   0
-    /* code32: base 0, limit 4 GiB */
-    .word   0xFFFF, 0x0000
-    .byte   0x00, 0x9A, 0xCF, 0x00
-    /* data32: base 0, limit 4 GiB */
-    .word   0xFFFF, 0x0000
-    .byte   0x00, 0x92, 0xCF, 0x00
+    /* code: present, ring 0, long mode. No base, no limit: in 64-bit the
+       processor ignores both. */
+    .quad   0x00209A0000000000
+    .quad   0x0000920000000000
 gdt_end:
 
 gdt_desc:
     .word   gdt_end - gdt - 1
-    .long   BASE + (gdt - _start)
+    .quad   BASE + (gdt - _start)
 
 /* Filled in by smp.c before each processor is started. The signature lets it
-   find them without knowing how the code above is laid out. */
-.align 4
+   find them without knowing how the code above is laid out. Each is a full
+   machine word now, because a page table address and a kernel entry point
+   are both 64-bit. */
+.align 8
     .ascii  "NYXSMP01"
-param_cr3:      .long 0
-param_stack:    .long 0
-param_entry:    .long 0
-param_arg:      .long 0
+param_cr3:      .quad 0
+param_stack:    .quad 0
+param_entry:    .quad 0
+param_arg:      .quad 0

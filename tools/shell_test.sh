@@ -11,8 +11,8 @@ set -e
 cd "$(dirname "$0")/.."
 
 QEMU="${QEMU:-}"
-[ -z "$QEMU" ] && QEMU=$(command -v qemu-system-i386 || true)
-[ -z "$QEMU" ] && QEMU="/c/Program Files/qemu/qemu-system-i386.exe"
+[ -z "$QEMU" ] && QEMU=$(command -v qemu-system-x86_64 || true)
+[ -z "$QEMU" ] && QEMU="/c/Program Files/qemu/qemu-system-x86_64.exe"
 
 run_with_timeout() {
   local seconds="$1"
@@ -47,7 +47,7 @@ type_line() {
   local i
   for (( i=0; i<${#s}; i++ )); do
     printf '%s' "${s:$i:1}"
-    sleep 0.03
+    sleep 0.05
   done
   printf '\n'
   sleep 0.45
@@ -80,7 +80,7 @@ feed() {
   sleep 2.5
 }
 
-feed | run_with_timeout 90 "$QEMU" -kernel build/nyx.elf -m 64 -no-reboot -display none -serial stdio > "$OUT" 2>&1 || true
+feed | run_with_timeout 90 "$QEMU" -kernel build/nyx.bin -m 64 -no-reboot -display none -serial stdio > "$OUT" 2>&1 || true
 
 fails=0
 check() {
@@ -89,7 +89,7 @@ check() {
 }
 
 echo "=== shell test ==="
-check "nyx 0.6.2 i686"           "uname reports the kernel"
+check "nyx 0.6.2 x86_64"           "uname reports the kernel"
 check "readme.txt"               "ls shows the seeded files"
 check "hello from a filesystem"  "cat prints file contents"
 check "shell wrote this"         "write then cat round trips"
@@ -101,7 +101,7 @@ check "running "                 "ps formats task state columns"
 check "physical:"                "mem reports physical memory"
 check "spawned pid"              "spawn creates a task"
 check "hello from a program"     "exec runs a built-in ELF in ring 3"
-check "wintest: surface at 0x60" "a ring 3 program is handed a window surface"
+check "wintest: surface at 0x0000008060000000" "a ring 3 program is handed a window surface"
 check "wintest: wrote and read back 3072 pixels" "it can write every pixel of it"
 check "closed, handle is dead"  "the handle stops working once closed"
 check "wintest: ok"              "and it cannot reach another program's window"

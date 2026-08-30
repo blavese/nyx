@@ -1,11 +1,17 @@
 #pragma once
 #include "types.h"
 
+/* What an interrupt leaves on the stack, lowest address first.
+ *
+ * The order is the reverse of the order isr.S pushes in, because a push moves
+ * downward. Long mode always pushes rsp and ss, even when the privilege level
+ * did not change, which 32-bit did not, so there is no special case for a
+ * frame taken in the kernel. */
 typedef struct {
-    u32 ds;
-    u32 edi, esi, ebp, esp_unused, ebx, edx, ecx, eax;
-    u32 int_no, err_code;
-    u32 eip, cs, eflags, useresp, ss;
+    u64 r15, r14, r13, r12, r11, r10, r9, r8;
+    u64 rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    u64 int_no, err_code;
+    u64 rip, cs, rflags, rsp, ss;
 } registers_t;
 
 typedef void (*isr_handler_t)(registers_t *);

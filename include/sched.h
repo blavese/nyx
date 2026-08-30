@@ -9,14 +9,14 @@
 typedef enum { TASK_READY, TASK_RUNNING, TASK_SLEEPING, TASK_DEAD } task_state_t;
 
 typedef struct task {
-    u32  esp;                 /* saved kernel stack pointer */
-    u32  stack_base;
+    u64  rsp;                 /* saved kernel stack pointer */
+    u64  stack_base;
     u32  pid;
     char name[32];
     task_state_t state;
     u64  wake_at;             /* tick to wake on when sleeping */
     u32  slices;              /* how many times it has been scheduled */
-    u32  dir;                 /* address space, 0 means the kernel's */
+    u64  dir;                 /* address space, 0 means the kernel's */
     bool user;                /* runs in ring 3 */
     char cwd[TASK_CWD_MAX];   /* working directory, inherited at creation */
     struct task *next;
@@ -27,7 +27,7 @@ task_t *task_create(const char *name, void (*entry)(void));
 
 /* Builds a ring 3 task in its own address space. entry and stack_top are
    addresses in that space, not the kernel's. */
-task_t *task_create_user(const char *name, u32 dir, u32 entry, u32 stack_top);
+task_t *task_create_user(const char *name, u64 dir, u64 entry, u64 stack_top);
 void   sched_start(void);
 void   task_exit(void);
 void   task_sleep(u32 ms);

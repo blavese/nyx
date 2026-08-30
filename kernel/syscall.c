@@ -23,8 +23,9 @@
 #include "fb.h"
 #include "fat.h"
 
-/* User space is everything above the kernel's identity mapped region. */
-#define USER_MIN (KERNEL_SPACE_MB * 1024u * 1024u)
+/* A pointer from ring 3 has to be inside user space to begin with. Being
+   mapped is checked separately, and being reachable from ring 3 after that. */
+#define USER_MIN USER_SPACE_BASE
 
 /* Confirms a user buffer is one the caller could have reached on its own:
    above the kernel, not wrapped, and mapped user-accessible for its whole
@@ -37,13 +38,13 @@
    directory; they are simply not reachable from ring 3 because their pages
    lack the user bit. Checking presence alone would let a program name one of
    those addresses and have the kernel write to it on the program's behalf. */
-static bool user_range_ok(u32 addr, u32 len) {
+static bool user_range_ok(u64 addr, u64 len) {
     if (len == 0) return true;
     if (addr < USER_MIN) return false;
     if (addr + len < addr) return false;                 /* wrapped */
 
-    u32 dir = paging_current_directory();
-    for (u32 a = addr & ~0xFFFu; a < addr + len; a += PAGE_SIZE) {
+    u64 dir = paging_current_directory();
+    for (u64 a = addr & ~0xFFFull; a < addr + len; a += PAGE_SIZE) {
         if (!virt_is_user_in(dir, a)) return false;
     }
     return true;
@@ -56,20 +57,20 @@ static u32 caller_pid(void) {
     return t ? t->pid : 0;
 }
 
-static i32 sys_exit(registers_t *r) {
+static i64 sys_exit(registers_t *r) {
     (void)r;
     task_exit();
     return 0;
 }
 
-static i32 sys_putc(registers_t *r) {
-    kputc((char)(r->ebx & 0xFF));
+static i64 sys_putc(registers_t *r) {
+    kputc((char)(r->rbx & 0xFF));
     return 1;
 }
 
-static i32 sys_write(registers_t *r) {
-    u32 buf = r->ecx;
-    u32 len = r->edx;
+static i64 sys_write(registers_t *r) {
+    u64 buf = r->rcx;
+    u64 len = r->rdx;
     if (len > 65536) return -1;
     if (!user_range_ok(buf, len)) return -1;
     const char *p = (const char *)buf;
@@ -77,27 +78,27 @@ static i32 sys_write(registers_t *r) {
     return (i32)len;
 }
 
-static i32 sys_getpid(registers_t *r) {
+static i64 sys_getpid(registers_t *r) {
     (void)r;
     task_t *t = task_current();
     return t ? (i32)t->pid : -1;
 }
 
-static i32 sys_ticks(registers_t *r) {
+static i64 sys_ticks(registers_t *r) {
     (void)r;
     return (i32)timer_ticks();
 }
 
-static i32 sys_sleep(registers_t *r) {
-    task_sleep(r->ebx);
+static i64 sys_sleep(registers_t *r) {
+    task_sleep(r->rbx);
     return 0;
 }
 
 /* Reads a file into a user buffer. Returns the byte count, or -1. */
-static i32 sys_read_file(registers_t *r) {
-    u32 name_addr = r->ebx;
-    u32 buf = r->ecx;
-    u32 cap = r->edx;
+static i64 sys_read_file(registers_t *r) {
+    u64 name_addr = r->rbx;
+    u64 buf = r->rcx;
+    u64 cap = r->rdx;
 
     if (!user_range_ok(name_addr, 1) || !user_range_ok(buf, cap)) return -1;
 
@@ -120,7 +121,7 @@ static i32 sys_read_file(registers_t *r) {
    before anything looks at it. A path that is still in user memory can be
    changed by another thread between the check and the use. */
 
-static bool copy_path(u32 addr, char *out, u32 cap) {
+static bool copy_path(u64 addr, char *out, u64 cap) {
     for (u32 i = 0; i < cap; i++) {
         if (!user_range_ok(addr + i, 1)) return false;
         out[i] = ((const char *)addr)[i];
@@ -129,89 +130,89 @@ static bool copy_path(u32 addr, char *out, u32 cap) {
     return false;                       /* no terminator inside the limit */
 }
 
-static i32 sys_open(registers_t *r) {
+static i64 sys_open(registers_t *r) {
     char path[VFS_PATH_MAX];
-    if (!copy_path(r->ebx, path, sizeof(path))) return -1;
-    return vfs_open(path, r->ecx);
+    if (!copy_path(r->rbx, path, sizeof(path))) return -1;
+    return vfs_open(path, r->rcx);
 }
 
-static i32 sys_close(registers_t *r) {
-    return vfs_close((int)r->ebx) ? 0 : -1;
+static i64 sys_close(registers_t *r) {
+    return vfs_close((int)r->rbx) ? 0 : -1;
 }
 
-static i32 sys_fread(registers_t *r) {
-    u32 buf = r->ecx, len = r->edx;
+static i64 sys_fread(registers_t *r) {
+    u64 buf = r->rcx, len = r->rdx;
     if (len > 1024 * 1024) return -1;
     if (!user_range_ok(buf, len)) return -1;
-    return vfs_fd_read((int)r->ebx, (void *)buf, len);
+    return vfs_fd_read((int)r->rbx, (void *)buf, len);
 }
 
-static i32 sys_fwrite(registers_t *r) {
-    u32 buf = r->ecx, len = r->edx;
+static i64 sys_fwrite(registers_t *r) {
+    u64 buf = r->rcx, len = r->rdx;
     if (len > 1024 * 1024) return -1;
     if (!user_range_ok(buf, len)) return -1;
-    return vfs_fd_write((int)r->ebx, (const void *)buf, len);
+    return vfs_fd_write((int)r->rbx, (const void *)buf, len);
 }
 
-static i32 sys_seek(registers_t *r) {
-    return vfs_fd_seek((int)r->ebx, (i32)r->ecx, r->edx);
+static i64 sys_seek(registers_t *r) {
+    return vfs_fd_seek((int)r->rbx, (i32)r->rcx, r->rdx);
 }
 
-static i32 sys_unlink(registers_t *r) {
+static i64 sys_unlink(registers_t *r) {
     char path[VFS_PATH_MAX];
-    if (!copy_path(r->ebx, path, sizeof(path))) return -1;
+    if (!copy_path(r->rbx, path, sizeof(path))) return -1;
     return vfs_delete(path) ? 0 : -1;
 }
 
-static i32 sys_mkdir(registers_t *r) {
+static i64 sys_mkdir(registers_t *r) {
     char path[VFS_PATH_MAX];
-    if (!copy_path(r->ebx, path, sizeof(path))) return -1;
+    if (!copy_path(r->rbx, path, sizeof(path))) return -1;
     return vfs_mkdir(path) ? 0 : -1;
 }
 
-static i32 sys_rmdir(registers_t *r) {
+static i64 sys_rmdir(registers_t *r) {
     char path[VFS_PATH_MAX];
-    if (!copy_path(r->ebx, path, sizeof(path))) return -1;
+    if (!copy_path(r->rbx, path, sizeof(path))) return -1;
     return vfs_rmdir(path) ? 0 : -1;
 }
 
-static i32 sys_readdir(registers_t *r) {
+static i64 sys_readdir(registers_t *r) {
     char path[VFS_PATH_MAX];
-    if (!copy_path(r->ebx, path, sizeof(path))) return -1;
-    if (!user_range_ok(r->edx, sizeof(nyx_stat_t))) return -1;
+    if (!copy_path(r->rbx, path, sizeof(path))) return -1;
+    if (!user_range_ok(r->rdx, sizeof(nyx_stat_t))) return -1;
 
     nyx_stat_t st;
     memset(&st, 0, sizeof(st));
     bool is_dir = false;
-    int rc = vfs_list(path, r->ecx, st.name, &st.size, &is_dir);
+    int rc = vfs_list(path, r->rcx, st.name, &st.size, &is_dir);
     if (rc != 1) return rc < 0 ? -1 : 0;
     st.is_dir = is_dir ? 1 : 0;
-    memcpy((void *)r->edx, &st, sizeof(st));
+    memcpy((void *)r->rdx, &st, sizeof(st));
     return 1;
 }
 
-static i32 sys_stat(registers_t *r) {
+static i64 sys_stat(registers_t *r) {
     char path[VFS_PATH_MAX];
-    if (!copy_path(r->ebx, path, sizeof(path))) return -1;
-    if (!user_range_ok(r->ecx, sizeof(nyx_stat_t))) return -1;
+    if (!copy_path(r->rbx, path, sizeof(path))) return -1;
+    if (!user_range_ok(r->rcx, sizeof(nyx_stat_t))) return -1;
 
     nyx_stat_t st;
     memset(&st, 0, sizeof(st));
     bool is_dir = false;
     if (!vfs_stat(path, &st.size, &is_dir)) return -1;
     st.is_dir = is_dir ? 1 : 0;
-    memcpy((void *)r->ecx, &st, sizeof(st));
+    memcpy((void *)r->rcx, &st, sizeof(st));
     return 0;
 }
 
-static i32 sys_chdir(registers_t *r) {
+static i64 sys_chdir(registers_t *r) {
     char path[VFS_PATH_MAX];
-    if (!copy_path(r->ebx, path, sizeof(path))) return -1;
+    if (!copy_path(r->rbx, path, sizeof(path))) return -1;
     return vfs_chdir(path) ? 0 : -1;
 }
 
-static i32 sys_getcwd(registers_t *r) {
-    u32 buf = r->ebx, cap = r->ecx;
+static i64 sys_getcwd(registers_t *r) {
+    u64 buf = r->rbx, cap = r->rcx;
     if (cap == 0 || cap > VFS_PATH_MAX) return -1;
     if (!user_range_ok(buf, cap)) return -1;
     const char *at = vfs_cwd();
@@ -230,10 +231,10 @@ static i32 sys_getcwd(registers_t *r) {
 static u32 sock_owner;
 static bool sock_open;
 
-static i32 sys_connect(registers_t *r) {
+static i64 sys_connect(registers_t *r) {
     char host[128];
-    if (!copy_path(r->ebx, host, sizeof(host))) return -1;
-    u16 port = (u16)r->ecx;
+    if (!copy_path(r->rbx, host, sizeof(host))) return -1;
+    u16 port = (u16)r->rcx;
     if (!port) return -1;
     if (!net_up()) return -1;
     if (sock_open) return -1;              /* already in use */
@@ -247,23 +248,23 @@ static i32 sys_connect(registers_t *r) {
     return 0;
 }
 
-static i32 sys_send(registers_t *r) {
+static i64 sys_send(registers_t *r) {
     if (!sock_open || sock_owner != caller_pid()) return -1;
-    u32 buf = r->ecx, len = r->edx;
+    u64 buf = r->rcx, len = r->rdx;
     if (len == 0 || len > 1400) return -1;
     if (!user_range_ok(buf, len)) return -1;
     return tcp_send((const void *)buf, (u16)len) ? (i32)len : -1;
 }
 
-static i32 sys_recv(registers_t *r) {
+static i64 sys_recv(registers_t *r) {
     if (!sock_open || sock_owner != caller_pid()) return -1;
-    u32 buf = r->ecx, len = r->edx;
+    u64 buf = r->rcx, len = r->rdx;
     if (len == 0 || len > 65536) return -1;
     if (!user_range_ok(buf, len)) return -1;
     return (i32)tcp_recv((u8 *)buf, len, 4000);
 }
 
-static i32 sys_disconnect(registers_t *r) {
+static i64 sys_disconnect(registers_t *r) {
     (void)r;
     if (!sock_open || sock_owner != caller_pid()) return -1;
     tcp_close();
@@ -277,20 +278,20 @@ void syscall_release(u32 pid) {
     if (sock_open && sock_owner == pid) { tcp_close(); sock_open = false; }
 }
 
-static i32 sys_resolve(registers_t *r) {
+static i64 sys_resolve(registers_t *r) {
     char host[128];
-    if (!copy_path(r->ebx, host, sizeof(host))) return -1;
-    if (!user_range_ok(r->ecx, 4)) return -1;
+    if (!copy_path(r->rbx, host, sizeof(host))) return -1;
+    if (!user_range_ok(r->rcx, 4)) return -1;
     if (!net_up()) return -1;
 
     ipv4_t ip = net_parse_ip(host);
     if (!ip && !net_resolve(host, &ip, 6000)) return -1;
-    *(u32 *)r->ecx = ip;
+    *(u32 *)r->rcx = ip;
     return 0;
 }
 
-static i32 sys_netinfo(registers_t *r) {
-    if (!user_range_ok(r->ebx, sizeof(nyx_netinfo_t))) return -1;
+static i64 sys_netinfo(registers_t *r) {
+    if (!user_range_ok(r->rbx, sizeof(nyx_netinfo_t))) return -1;
     nyx_netinfo_t info;
     memset(&info, 0, sizeof(info));
     info.up = net_up() ? 1 : 0;
@@ -301,7 +302,7 @@ static i32 sys_netinfo(registers_t *r) {
         info.dns = net_dns();
         memcpy(info.mac, net_mac(), 6);
     }
-    memcpy((void *)r->ebx, &info, sizeof(info));
+    memcpy((void *)r->rbx, &info, sizeof(info));
     return 0;
 }
 
@@ -311,9 +312,9 @@ static i32 sys_netinfo(registers_t *r) {
    a window_t, only a handle it was given, and the handle is checked against
    the caller's pid every time so one program cannot drive another's window. */
 
-static i32 sys_win_create(registers_t *r) {
-    u32 name_addr = r->ebx;
-    int cw = (int)r->ecx, ch = (int)r->edx;
+static i64 sys_win_create(registers_t *r) {
+    u64 name_addr = r->rbx;
+    int cw = (int)r->rcx, ch = (int)r->rdx;
 
     char title[32];
     const char *src = (const char *)name_addr;
@@ -328,36 +329,38 @@ static i32 sys_win_create(registers_t *r) {
     return winsrv_create(caller_pid(), title, cw, ch);
 }
 
-static i32 sys_win_surface(registers_t *r) {
-    u32 addr = winsrv_surface(caller_pid(), (int)r->ebx,
+static i64 sys_win_surface(registers_t *r) {
+    /* This is the one system call whose result is a pointer, which is why
+       the whole table returns a machine word rather than an int. */
+    u64 addr = winsrv_surface(caller_pid(), (int)r->rbx,
                               paging_current_directory());
-    return (i32)addr;
+    return (i64)addr;
 }
 
-static i32 sys_win_size(registers_t *r) {
-    return winsrv_size(caller_pid(), (int)r->ebx);
+static i64 sys_win_size(registers_t *r) {
+    return winsrv_size(caller_pid(), (int)r->rbx);
 }
 
-static i32 sys_win_poll(registers_t *r) {
-    u32 out = r->ecx;
+static i64 sys_win_poll(registers_t *r) {
+    u64 out = r->rcx;
     if (!user_range_ok(out, sizeof(wm_event_t))) return -1;
 
     wm_event_t ev;
-    if (!winsrv_poll(caller_pid(), (int)r->ebx, &ev)) return 0;
+    if (!winsrv_poll(caller_pid(), (int)r->rbx, &ev)) return 0;
     memcpy((void *)out, &ev, sizeof(ev));
     return 1;
 }
 
-static i32 sys_win_commit(registers_t *r) {
-    return winsrv_commit(caller_pid(), (int)r->ebx) ? 0 : -1;
+static i64 sys_win_commit(registers_t *r) {
+    return winsrv_commit(caller_pid(), (int)r->rbx) ? 0 : -1;
 }
 
-static i32 sys_win_close(registers_t *r) {
-    return winsrv_close(caller_pid(), (int)r->ebx) ? 0 : -1;
+static i64 sys_win_close(registers_t *r) {
+    return winsrv_close(caller_pid(), (int)r->rbx) ? 0 : -1;
 }
 
-static i32 sys_sysinfo(registers_t *r) {
-    if (!user_range_ok(r->ebx, sizeof(nyx_sysinfo_t))) return -1;
+static i64 sys_sysinfo(registers_t *r) {
+    if (!user_range_ok(r->rbx, sizeof(nyx_sysinfo_t))) return -1;
 
     nyx_sysinfo_t info;
     memset(&info, 0, sizeof(info));
@@ -374,14 +377,14 @@ static i32 sys_sysinfo(registers_t *r) {
     info.syscalls = syscall_count();
     info.disk_kb_free = fat_mounted() ? fat_free_bytes() / 1024 : 0;
 
-    memcpy((void *)r->ebx, &info, sizeof(info));
+    memcpy((void *)r->rbx, &info, sizeof(info));
     return 0;
 }
 
 static u32 served;
 u32 syscall_count(void) { return served; }
 
-typedef i32 (*syscall_fn)(registers_t *);
+typedef i64 (*syscall_fn)(registers_t *);
 
 static const syscall_fn TABLE[] = {
     [SYS_EXIT]      = sys_exit,
@@ -422,12 +425,12 @@ static const syscall_fn TABLE[] = {
 
 static void syscall_handler(registers_t *r) {
     served++;
-    u32 n = r->eax;
+    u64 n = r->rax;
     if (n >= N_SYSCALLS || !TABLE[n]) {
-        r->eax = (u32)-1;
+        r->rax = (u64)-1;
         return;
     }
-    r->eax = (u32)TABLE[n](r);
+    r->rax = (u64)TABLE[n](r);
 }
 
 void syscall_init(void) {

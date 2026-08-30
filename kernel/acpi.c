@@ -57,13 +57,13 @@ const acpi_info_t *acpi(void) { return &info; }
 /* Makes a physical range readable. Below the identity mapped region there is
    nothing to do; above it, the pages are mapped where they already are, so
    the pointer the caller gets is the physical address either way. */
-static const void *map_phys(u32 phys, u32 len) {
-    u32 limit = KERNEL_SPACE_MB * 1024u * 1024u;
+static const void *map_phys(u64 phys, u64 len) {
+    u64 limit = KERNEL_SPACE_MB * 1024ull * 1024ull;
     if (phys + len <= limit) return (const void *)phys;
 
-    u32 first = phys & ~0xFFFu;
-    u32 last = (phys + len + PAGE_SIZE - 1) & ~0xFFFu;
-    for (u32 a = first; a < last; a += PAGE_SIZE)
+    u64 first = phys & ~0xFFFull;
+    u64 last = (phys + len + PAGE_SIZE - 1) & ~0xFFFull;
+    for (u64 a = first; a < last; a += PAGE_SIZE)
         if (!virt_to_phys(a) && !map_page(a, a, PTE_PRESENT | PTE_RW)) return 0;
     return (const void *)phys;
 }
@@ -78,15 +78,15 @@ static bool checksum_ok(const u8 *p, u32 len) {
    or somewhere in the last 128 KiB below a megabyte, on a 16 byte boundary
    in both cases. */
 static const rsdp_t *find_rsdp(void) {
-    u32 ebda = (u32)(*(volatile u16 *)0x40E) << 4;
+    u64 ebda = (u64)(*(volatile u16 *)0x40E) << 4;
     if (ebda >= 0x400 && ebda < 0xA0000) {
-        for (u32 a = ebda; a < ebda + 1024; a += 16) {
+        for (u64 a = ebda; a < ebda + 1024; a += 16) {
             const rsdp_t *r = (const rsdp_t *)a;
             if (memcmp(r->sig, "RSD PTR ", 8) == 0 && checksum_ok((const u8 *)r, 20))
                 return r;
         }
     }
-    for (u32 a = 0xE0000; a < 0x100000; a += 16) {
+    for (u64 a = 0xE0000; a < 0x100000; a += 16) {
         const rsdp_t *r = (const rsdp_t *)a;
         if (memcmp(r->sig, "RSD PTR ", 8) == 0 && checksum_ok((const u8 *)r, 20))
             return r;

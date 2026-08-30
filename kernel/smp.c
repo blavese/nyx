@@ -111,16 +111,18 @@ static void delay_us(u32 us) {
 static void ap_main(void *arg);
 
 /* Writes the parameters into the copy of the trampoline at 0x8000. */
-static bool patch_trampoline(u32 stack_top, u32 index) {
+static bool patch_trampoline(u64 stack_top, u64 index) {
     u8 *code = (u8 *)TRAMPOLINE_PHYS;
-    u32 len = (u32)(trampoline_end - trampoline_start);
+    u64 len = (u64)(trampoline_end - trampoline_start);
 
-    for (u32 i = 0; i + 8 + 16 <= len; i += 4) {
+    for (u64 i = 0; i + 8 + 32 <= len; i += 4) {
         if (memcmp(code + i, "NYXSMP01", 8) != 0) continue;
-        u32 *p = (u32 *)(code + i + 8);
+        /* Four addresses, each a full machine word now: the page tables, the
+           stack, where to go and which processor this is. */
+        u64 *p = (u64 *)(code + i + 8);
         p[0] = paging_kernel_directory();
         p[1] = stack_top;
-        p[2] = (u32)ap_main;
+        p[2] = (u64)ap_main;
         p[3] = index;
         return true;
     }
@@ -133,7 +135,7 @@ static bool start_cpu(u32 index) {
     u8 *stack = (u8 *)kmalloc(AP_STACK_SIZE);
     if (!stack) return false;
     memset(stack, 0, AP_STACK_SIZE);
-    u32 top = ((u32)stack + AP_STACK_SIZE) & ~0xFu;
+    u64 top = ((u64)stack + AP_STACK_SIZE) & ~0xFull;
 
     if (!patch_trampoline(top, index)) { kfree(stack); return false; }
 
@@ -168,7 +170,7 @@ static bool start_cpu(u32 index) {
    own. It never returns and never enables interrupts: it has no interrupt
    table, and it does not need one to do what it is here for. */
 static void ap_main(void *arg) {
-    u32 index = (u32)arg;
+    u64 index = (u64)arg;
     if (index >= SMP_MAX_CPUS) for (;;) __asm__ volatile ("hlt");
 
     slot_t *me = &cpus[index];
@@ -229,9 +231,8 @@ void smp_init(void) {
     if (a->ncpus == 0) return;
 
     /* The APIC block sits above the identity mapped region. */
-    u32 base = a->lapic_base & ~0xFFFu;
-    if (!map_page(base, base, PTE_PRESENT | PTE_RW)) return;
-    lapic = (volatile u8 *)base;
+    lapic = (volatile u8 *)paging_map_device(a->lapic_base & ~0xFFFull, 0x1000);
+    if (!lapic) return;
 
     /* Enable this processor's own APIC, which is what sends the signals. */
     apic_write(LAPIC_SVR, apic_read(LAPIC_SVR) | 0x100 | 0xFF);

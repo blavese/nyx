@@ -7,9 +7,9 @@
 set -e
 cd "$(dirname "$0")"
 QEMU="${QEMU:-}"
-[ -z "$QEMU" ] && QEMU=$(command -v qemu-system-i386 || true)
-[ -z "$QEMU" ] && QEMU="/c/Program Files/qemu/qemu-system-i386.exe"
-[ ! -x "$QEMU" ] && { echo "qemu-system-i386 not found" >&2; exit 1; }
+[ -z "$QEMU" ] && QEMU=$(command -v qemu-system-x86_64 || true)
+[ -z "$QEMU" ] && QEMU="/c/Program Files/qemu/qemu-system-x86_64.exe"
+[ ! -x "$QEMU" ] && { echo "qemu-system-x86_64 not found" >&2; exit 1; }
 
 bash build.sh >/dev/null
 
@@ -20,7 +20,7 @@ if [ ! -f "$DISK" ]; then
   echo "creating $DISK (16 MiB)"
   head -c 16777216 /dev/zero > "$DISK"
 fi
-COMMON=(-kernel build/nyx.elf -m 64 -no-reboot
+COMMON=(-kernel build/nyx.bin -m 64 -no-reboot
         -drive "file=$DISK,format=raw,if=ide,index=0"
         -netdev user,id=n0 -device rtl8139,netdev=n0)
 case "$1" in

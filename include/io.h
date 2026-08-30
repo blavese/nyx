@@ -25,8 +25,10 @@ static inline u32 inl(u16 port) {
 static inline void io_wait(void) { outb(0x80, 0); }
 
 static inline bool interrupts_enabled(void) {
-    u32 flags;
-    __asm__ volatile ("pushf; pop %0" : "=r"(flags));
+    /* The flags register is 64 bits wide here, and pushing it pushes eight
+       bytes, so popping into anything narrower does not assemble. */
+    u64 flags;
+    __asm__ volatile ("pushfq; popq %0" : "=r"(flags));
     return (flags & 0x200) != 0;
 }
 

@@ -103,7 +103,7 @@ bool rtl_send(const void *data, u16 len) {
     memset(buf, 0, 1792);
     memcpy(buf, data, len);
 
-    outl(io_base + REG_TSAD0 + tx_slot * 4, (u32)buf);
+    outl(io_base + REG_TSAD0 + tx_slot * 4, (u32)(u64)buf);
     outl(io_base + REG_TSD0  + tx_slot * 4, total);
 
     /* Wait for the card to take it. Bit 15 (OWN) goes high when the buffer
@@ -135,8 +135,14 @@ bool rtl_init(void) {
     if (!rx_buf) return false;
     memset(rx_buf, 0, RX_BUF_SIZE + RX_PAD);
     /* The heap sits inside the identity mapped region, so the address the
-       kernel sees is the address the card needs. */
-    outl(io_base + REG_RBSTART, (u32)rx_buf);
+       kernel sees is the address the card needs.
+
+       This card's buffer register is 32 bits wide and there is no upper half
+       to go with it, so it genuinely cannot reach memory above 4 GiB. The
+       kernel keeps everything it allocates well below that, but say so rather
+       than quietly handing the card a truncated address. */
+    if ((u64)rx_buf >> 32) return false;
+    outl(io_base + REG_RBSTART, (u32)(u64)rx_buf);
 
     for (int i = 0; i < 4; i++) {
         tx_buf[i] = (u8 *)kmalloc(1792);
