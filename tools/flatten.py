@@ -16,22 +16,36 @@ import sys
 
 
 def load_segments(path):
+    """Both widths, because the bootloader is 32-bit and the kernel is 64."""
     data = open(path, "rb").read()
     if data[:4] != b"\x7fELF":
         raise SystemExit("%s is not an ELF file" % path)
-    if data[4] != 1:
-        raise SystemExit("only 32-bit ELF is handled")
 
-    entry = struct.unpack_from("<I", data, 24)[0]
-    phoff = struct.unpack_from("<I", data, 28)[0]
-    phentsize = struct.unpack_from("<H", data, 42)[0]
-    phnum = struct.unpack_from("<H", data, 44)[0]
+    wide = data[4] == 2
+    if data[4] not in (1, 2):
+        raise SystemExit("%s has an ELF class of %d" % (path, data[4]))
+
+    if wide:
+        entry = struct.unpack_from("<Q", data, 24)[0]
+        phoff = struct.unpack_from("<Q", data, 32)[0]
+        phentsize = struct.unpack_from("<H", data, 54)[0]
+        phnum = struct.unpack_from("<H", data, 56)[0]
+    else:
+        entry = struct.unpack_from("<I", data, 24)[0]
+        phoff = struct.unpack_from("<I", data, 28)[0]
+        phentsize = struct.unpack_from("<H", data, 42)[0]
+        phnum = struct.unpack_from("<H", data, 44)[0]
 
     segments = []
     for i in range(phnum):
         off = phoff + i * phentsize
-        p_type, p_off, p_vaddr, p_paddr, p_filesz, p_memsz, _flags, _align = \
-            struct.unpack_from("<8I", data, off)
+        if wide:
+            # 64-bit reorders these: flags moves ahead of the offsets.
+            p_type, _flags, p_off, p_vaddr, p_paddr, p_filesz, p_memsz, _align = \
+                struct.unpack_from("<IIQQQQQQ", data, off)
+        else:
+            p_type, p_off, p_vaddr, p_paddr, p_filesz, p_memsz, _flags, _align = \
+                struct.unpack_from("<8I", data, off)
         if p_type != 1 or p_memsz == 0:      # PT_LOAD only
             continue
         segments.append((p_paddr, p_memsz, data[p_off:p_off + p_filesz]))
