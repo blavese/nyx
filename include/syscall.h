@@ -42,6 +42,22 @@
 #define SYS_NETINFO     30
 #define SYS_SYSINFO      31
 
+/* Starting other programs. Until these existed, only the kernel could run
+   one, which is why the shell and the launcher had to live inside it. */
+#define SYS_SPAWN        32
+#define SYS_WAIT         33
+#define SYS_KILL         34
+#define SYS_TASKS        35
+
+/* What SYS_TASKS reports about one task. */
+typedef struct {
+    u32  pid;
+    u32  state;              /* 0 ready, 1 running, 2 sleeping, 3 blocked, 4 dead */
+    u32  slices;
+    u32  user;
+    char name[32];
+} nyx_task_t;
+
 /* What SYS_SYSINFO fills in: what the machine is, as far as a program is
    allowed to know. */
 typedef struct {

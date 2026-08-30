@@ -15,6 +15,9 @@
 #include "timer.h"
 #include "winsrv.h"
 #include "vfs.h"
+#include "wait.h"
+#include "elf.h"
+#include "user.h"
 #include "net.h"
 #include "tcp.h"
 #include "heap.h"
@@ -57,9 +60,99 @@ static u32 caller_pid(void) {
     return t ? t->pid : 0;
 }
 
+/* Copies a path in before anything looks at it. A path still in user memory
+   can be changed by another thread between the check and the use. */
+static bool copy_path(u64 addr, char *out, u64 cap) {
+    for (u32 i = 0; i < cap; i++) {
+        if (!user_range_ok(addr + i, 1)) return false;
+        out[i] = ((const char *)addr)[i];
+        if (!out[i]) return true;
+    }
+    return false;                       /* no terminator inside the limit */
+}
+
 static i64 sys_exit(registers_t *r) {
-    (void)r;
-    task_exit();
+    /* The status is whatever the program returned from main, which its
+       start code puts in the first argument. */
+    task_exit_with((int)(i32)r->rbx);
+    return 0;
+}
+
+/* --- starting other programs --------------------------------------------
+
+   A program naming another program is the one place a system call takes a
+   path that leads to something being run, so the path is copied in and the
+   image is read through the same VFS everything else uses: there is no way
+   to ask for a program that could not also be read with `cat`. */
+
+static i64 sys_spawn(registers_t *r) {
+    char path[VFS_PATH_MAX];
+    if (!copy_path(r->rbx, path, sizeof(path))) return -1;
+
+    u32 size = 0;
+    u8 *image = vfs_slurp(path, &size);
+    if (!image) return -1;
+
+    /* The name shown in the task list is the file's, not the whole path. */
+    const char *name = path;
+    for (const char *p = path; *p; p++) if (*p == '/') name = p + 1;
+
+    int rc = user_spawn_elf(name, image, size);
+    kfree(image);
+    return rc;
+}
+
+static i64 sys_wait(registers_t *r) {
+    return task_wait((u32)r->rbx);
+}
+
+/* Ends another task. Only what this program started, which for now means any
+   task other than the one asking: there is no parent to check against yet,
+   and the alternative is not being able to stop anything at all. */
+static i64 sys_kill(registers_t *r) {
+    u32 pid = (u32)r->rbx;
+    task_t *me = task_current();
+    if (me && me->pid == pid) return -1;
+
+    task_t *t = task_by_pid(pid);
+    if (!t || t->state == TASK_DEAD) return -1;
+
+    /* Everything it holds goes back, exactly as if it had exited. */
+    winsrv_release(pid);
+    vfs_release(pid);
+    syscall_release(pid);
+    t->exit_status = -1;
+    t->died_at = timer_ticks();
+    t->state = TASK_DEAD;
+    wake_all(t);
+    return 0;
+}
+
+static i64 sys_tasks(registers_t *r) {
+    u32 index = (u32)r->rbx;
+    if (!user_range_ok(r->rcx, sizeof(nyx_task_t))) return -1;
+
+    task_t *head = task_list();
+    if (!head) return 0;
+
+    u32 i = 0;
+    task_t *p = head;
+    do {
+        if (i == index) {
+            nyx_task_t out;
+            memset(&out, 0, sizeof(out));
+            out.pid = p->pid;
+            out.state = (u32)p->state;
+            out.slices = p->slices;
+            out.user = p->user ? 1 : 0;
+            strncpy(out.name, p->name, sizeof(out.name) - 1);
+            memcpy((void *)r->rcx, &out, sizeof(out));
+            return 1;
+        }
+        i++;
+        p = p->next;
+    } while (p != head);
+
     return 0;
 }
 
@@ -120,15 +213,6 @@ static i64 sys_read_file(registers_t *r) {
    Every path arrives as a user pointer, so it is copied into the kernel
    before anything looks at it. A path that is still in user memory can be
    changed by another thread between the check and the use. */
-
-static bool copy_path(u64 addr, char *out, u64 cap) {
-    for (u32 i = 0; i < cap; i++) {
-        if (!user_range_ok(addr + i, 1)) return false;
-        out[i] = ((const char *)addr)[i];
-        if (!out[i]) return true;
-    }
-    return false;                       /* no terminator inside the limit */
-}
 
 static i64 sys_open(registers_t *r) {
     char path[VFS_PATH_MAX];
@@ -419,6 +503,10 @@ static const syscall_fn TABLE[] = {
     [SYS_RESOLVE]     = sys_resolve,
     [SYS_NETINFO]     = sys_netinfo,
     [SYS_SYSINFO]     = sys_sysinfo,
+    [SYS_SPAWN]       = sys_spawn,
+    [SYS_WAIT]        = sys_wait,
+    [SYS_KILL]        = sys_kill,
+    [SYS_TASKS]       = sys_tasks,
 };
 
 #define N_SYSCALLS (sizeof(TABLE) / sizeof(TABLE[0]))

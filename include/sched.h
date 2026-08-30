@@ -6,7 +6,13 @@
    scheduler has no other reason to know about the filesystem. */
 #define TASK_CWD_MAX 128
 
-typedef enum { TASK_READY, TASK_RUNNING, TASK_SLEEPING, TASK_DEAD } task_state_t;
+/* BLOCKED is different from SLEEPING: a sleeping task has a time it wants to
+   wake at, a blocked one is waiting for something to happen and may have no
+   deadline at all. The scheduler skips both, but only one of them can be
+   woken early by another task. */
+typedef enum {
+    TASK_READY, TASK_RUNNING, TASK_SLEEPING, TASK_BLOCKED, TASK_DEAD
+} task_state_t;
 
 typedef struct task {
     u64  rsp;                 /* saved kernel stack pointer */
@@ -14,7 +20,11 @@ typedef struct task {
     u32  pid;
     char name[32];
     task_state_t state;
-    u64  wake_at;             /* tick to wake on when sleeping */
+    u64  wake_at;             /* tick to wake on; 0 means no deadline */
+    const void *wait_on;      /* what it is blocked on, or null */
+    int  exit_status;         /* what it returned, once it is dead */
+    bool reaped;              /* somebody has collected that status */
+    u64  died_at;             /* when it finished, for the grace period */
     u32  slices;              /* how many times it has been scheduled */
     u64  dir;                 /* address space, 0 means the kernel's */
     bool user;                /* runs in ring 3 */
@@ -29,6 +39,9 @@ task_t *task_create(const char *name, void (*entry)(void));
    addresses in that space, not the kernel's. */
 task_t *task_create_user(const char *name, u64 dir, u64 entry, u64 stack_top);
 void   sched_start(void);
+
+/* Ends the running task with a status somebody may later collect. */
+void   task_exit_with(int status);
 void   task_exit(void);
 void   task_sleep(u32 ms);
 void   task_yield(void);
@@ -37,5 +50,12 @@ task_t *task_list(void);
 
 /* True while a pid is still in the run queue and not finished. */
 bool   task_alive(u32 pid);
-void   task_wait(u32 pid);
+
+/* Blocks until the task finishes and returns what it exited with, or -1 if
+   there is no such task. Collecting the status is what lets the task record
+   finally be freed. */
+int    task_wait(u32 pid);
+
 u32    task_count(void);
+u32    task_blocked_count(void);
+task_t *task_by_pid(u32 pid);
