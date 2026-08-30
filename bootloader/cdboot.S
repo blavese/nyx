@@ -21,13 +21,22 @@
  *
  * The four values the image builder patches sit right after the signature
  * below, so tools/mkiso.py can find them without parsing anything.
+ *
+ * The first 512 bytes have to stand on their own. The boot catalog asks the
+ * firmware for four 512 byte sectors, and most firmware obliges, but some
+ * loads one and leaves the rest of this file as whatever was in memory
+ * already. Everything past 0x7E00 here is the disk packet, the descriptor
+ * table and every string, so on such a machine lgdt reads garbage and the
+ * jump lands nowhere: the failure looks like the disc is corrupt rather than
+ * like a short read. So the code below 0x7E00 loads the whole file itself
+ * before using any of it, and then never runs again.
  */
 .code16
 .section .text
 .globl _start
 
 _start:
-    jmp     real_start
+    jmp     stage1
     .byte   0x90
 
     /* Patched by tools/mkiso.py. */
@@ -36,6 +45,7 @@ patch_lba:      .long 0          /* first 2048 byte sector of the payload */
 patch_bytes:    .long 0          /* how many bytes of payload there are */
 patch_entry:    .long 0          /* where to jump once it is in memory */
 patch_load:     .long 0x100000   /* where the payload belongs */
+patch_self:     .long 0          /* the sector this file itself came from */
 
 /* Where things go while we work. All of it is scratch below 0x7C00, which
    the BIOS has already finished with. */
@@ -43,17 +53,100 @@ patch_load:     .long 0x100000   /* where the payload belongs */
 .set MMAP_ADDR,    0x0600
 .set CMDLINE_ADDR, 0x0E00
 .set BUFFER_SEG,   0x1000        /* 0x10000, the disk read buffer */
+/* The boot drive, parked outside this file. Stage one reads the whole file
+   over itself, so anything it needs afterwards cannot be stored inside it:
+   the read would replace it with the value the file has on disc, which for
+   the drive number is zero, and zero is a different device. */
+.set DRIVE_STASH,  0x7000
 .set CHUNK_SECTORS, 16           /* 16 x 2048 = 32 KiB per read */
 
-real_start:
+/* --- stage one, which must fit below 0x7E00 ----------------------------- */
+
+stage1:
     cli
     xorw    %ax, %ax
     movw    %ax, %ds
     movw    %ax, %es
     movw    %ax, %ss
     movw    $0x7C00, %sp
-    movb    %dl, boot_drive
+    movb    %dl, s1_drive
+    movw    $DRIVE_STASH, %bx
+    movb    %dl, (%bx)
     sti
+
+    /* How big a sector is on whatever we booted from. A disc says 2048 and a
+       stick says 512, and the read below counts in those. */
+    movw    $2048, s1_secsize
+    movw    $s1_params, %si
+    movw    $0x1E, (%si)
+    movb    $0x48, %ah
+    int     $0x13
+    jc      1f
+    movw    24(%si), %ax
+    testw   %ax, %ax
+    jz      1f
+    cmpw    $2048, %ax
+    ja      1f
+    movw    %ax, s1_secsize
+
+1:  /* One 2048 byte block covers this whole file, however many device
+       sectors that turns out to be. */
+    movw    $2048, %ax
+    xorw    %dx, %dx
+    divw    s1_secsize
+    movw    %ax, s1_count
+    movzwl  %ax, %ecx
+    movl    patch_self, %eax
+    mull    %ecx
+    movl    %eax, s1_lba
+
+    movw    $s1_dap, %si
+    movb    s1_drive, %dl
+    movb    $0x42, %ah
+    int     $0x13
+    jc      s1_failed
+
+    /* Everything is really here now. Carry on in the copy that was just
+       read, which is byte for byte what is already executing, except for
+       anything stage one wrote into it. */
+    movw    $DRIVE_STASH, %bx
+    movb    (%bx), %dl
+    jmp     real_start
+
+s1_failed:
+    movw    $s1_msg, %si
+2:  lodsb
+    testb   %al, %al
+    jz      3f
+    movb    $0x0E, %ah
+    movw    $0x0007, %bx
+    int     $0x10
+    jmp     2b
+3:  hlt
+    jmp     3b
+
+.align 4
+s1_drive:   .byte 0
+s1_secsize: .word 2048
+s1_msg:     .asciz "nyx: cannot read the boot device\r\n"
+
+.align 4
+s1_dap:
+    .byte   16
+    .byte   0
+s1_count:   .word 1
+    .word   0x7C00              /* straight back over ourselves */
+    .word   0
+s1_lba:     .long 0
+    .long   0
+
+.align 4
+s1_params:  .space 0x1E
+
+/* --- stage two ---------------------------------------------------------- */
+
+real_start:
+    movb    %dl, boot_drive
 
     movw    $msg_boot, %si
     call    print

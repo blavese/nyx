@@ -9,8 +9,16 @@ programs are real ring 3 processes.
 ![the nyx desktop](docs/desktop.png)
 
 It is not a clone of anything. About 11,900 lines of C and assembly, no libc,
-no third-party code, no runtime dependencies, and nothing borrowed from
-another kernel.
+no runtime dependencies, and nothing borrowed from another kernel: every
+driver, the filesystem, the bootloader and the image writer are written here
+from the specifications.
+
+Two honest exceptions, since "from scratch" invites the question. The bitmap
+font is traced from a system typeface by `tools/genfont.py` rather than drawn
+by hand, so the glyph shapes are Consolas'. And `nyx.exe`, the Windows
+launcher, is a C# program that bundles the .NET runtime, which is most of its
+162 MB; the kernel inside it is about 700 KB. Nothing third party runs on the
+machine nyx boots.
 
 ## running it on Windows
 
@@ -346,7 +354,8 @@ large range:
   address work.
 - **BIOS only.** The bootloader is 16-bit real mode code that a UEFI machine
   will only run through its compatibility support module, and newer firmware
-  has stopped shipping one.
+  has stopped shipping one. If a virtual machine refuses the image, its
+  firmware setting is the first thing to check.
 - **32-bit only.** No long mode, so no more than 4 GiB of address space, and
   the whole thing would have to be ported to reach it.
 

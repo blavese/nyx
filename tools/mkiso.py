@@ -183,16 +183,21 @@ def root_directory(root_extent, entries):
     return pad(bytes(d), SECTOR)
 
 
-def patch_loader(loader, payload_lba, payload_bytes, entry, load_addr):
-    """The loader carries four values it cannot know until the image is laid
+def patch_loader(loader, payload_lba, payload_bytes, entry, load_addr,
+                 loader_lba):
+    """The loader carries five values it cannot know until the image is laid
     out. They sit behind a signature so this does not have to understand the
-    code around them."""
+    code around them.
+
+    The last one is where the loader itself lives, which it needs because the
+    first thing it does is read the rest of itself in rather than trust the
+    firmware to have loaded all of it."""
     sig = loader.find(b"NYXBOOT1")
     if sig < 0:
         raise SystemExit("the loader has no NYXBOOT1 signature")
     out = bytearray(loader)
-    struct.pack_into("<IIII", out, sig + 8,
-                     payload_lba, payload_bytes, entry, load_addr)
+    struct.pack_into("<IIIII", out, sig + 8,
+                     payload_lba, payload_bytes, entry, load_addr, loader_lba)
     return bytes(out)
 
 
@@ -268,7 +273,8 @@ def main():
     # failure is indistinguishable from a scratched disc.
     total_sectors = (total_sectors + 15) & ~15
 
-    loader = patch_loader(loader, payload_lba, len(payload), entry, 0x100000)
+    loader = patch_loader(loader, payload_lba, len(payload), entry, 0x100000,
+                          LOADER_LBA)
 
     le_table, be_table, table_size = path_tables(ROOT_DIR_LBA)
     root = root_directory(ROOT_DIR_LBA,
