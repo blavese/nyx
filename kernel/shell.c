@@ -10,6 +10,7 @@
 #include "pmm.h"
 #include "timer.h"
 #include "sched.h"
+#include "smp.h"
 #include "fs.h"
 #include "vfs.h"
 #include "blockdev.h"
@@ -71,6 +72,7 @@ static void cmd_help(void) {
             "  ring3           run the built-in ring 3 test\n"
             "  ps              list tasks\n"
             "  mem             memory usage\n"
+            "  cpus            processors found and started\n"
             "  uptime          time since boot\n"
             "  uname           kernel identity\n"
             "  echo TEXT       print text\n"
@@ -332,6 +334,20 @@ static void execute(char *buf) {
         if (argc < 2) kprintf("usage: rmdir NAME\n");
         else kprintf(vfs_rmdir(argv[1]) ? "ok\n" : "rmdir: not empty, or not a directory\n");
     } else if (!strcmp(c, "ps")) cmd_ps();
+    else if (!strcmp(c, "cpus")) {
+        kprintf("found    %d\n", smp_cpu_count());
+        kprintf("started  %d\n", smp_started());
+        kprintf("  CPU  APIC  ROLE     JOBS\n");
+        for (u32 i = 0; i < smp_cpu_count(); i++) {
+            const cpu_t *p = smp_cpu(i);
+            if (!p) continue;
+            kprintf("  %3d  %4d  %-7s  %d%s\n", i, p->apic_id,
+                    i == 0 ? "kernel" : "worker", p->jobs,
+                    p->started ? "" : "  (did not start)");
+        }
+        if (smp_cpu_count() > 1)
+            kprintf("the kernel runs on cpu 0; the others take work handed to them\n");
+    }
     else if (!strcmp(c, "mem")) cmd_mem();
     else if (!strcmp(c, "uptime")) cmd_uptime();
     else if (!strcmp(c, "uname")) kprintf("%s %s i686\n", KERNEL_NAME, KERNEL_VERSION);

@@ -30,6 +30,7 @@
 #include "font.h"
 #include "winsrv.h"
 #include "theme.h"
+#include "smp.h"
 #include "builtin.h"
 
 static int passed, failed;
@@ -595,6 +596,93 @@ static void test_theme(void) {
     vfs_delete(THEME_FILE);
 }
 
+/* --- the other processors -------------------------------------------------
+
+   These have to prove three separate things, because a processor that
+   started but never runs anything looks exactly like one that works:
+
+     - it executes code we gave it, and the code sees the right argument
+     - it runs at the same time as this one rather than instead of it
+     - the lock between them actually excludes
+
+   The counter test does the last two together. Every participant adds the
+   same number of times under the lock, and the total has to be exact. A
+   broken lock loses increments; a processor that never ran loses all of
+   them at once. */
+
+#define SMP_ADDS 20000
+
+static spinlock_t test_lock;
+static volatile u32 shared_counter;
+static volatile u32 seen_arg[SMP_MAX_CPUS];
+
+static void smp_add_work(void *arg) {
+    u32 who = (u32)arg;
+    if (who < SMP_MAX_CPUS) seen_arg[who] = who + 1;
+    for (u32 i = 0; i < SMP_ADDS; i++) {
+        spin_lock(&test_lock);
+        shared_counter++;
+        spin_unlock(&test_lock);
+    }
+}
+
+static void test_smp(void) {
+    ok("the firmware described at least one processor", smp_cpu_count() >= 1);
+    ok("this one is running", smp_cpu(0) && smp_cpu(0)->started);
+
+    if (smp_cpu_count() < 2) {
+        kprintf("  SKIP  only one processor on this machine\n");
+        return;
+    }
+
+    ok("every processor found was started", smp_started() == smp_cpu_count());
+
+    u32 helpers = 0;
+    for (u32 i = 1; i < smp_cpu_count(); i++)
+        if (smp_cpu(i)->started) helpers++;
+    ok("at least one other processor came up", helpers > 0);
+
+    /* They should be spinning in their idle loop already. */
+    u64 spins_before = smp_cpu(1)->spins;
+    sleep_ms(50);
+    ok("an idle processor is really looping", smp_cpu(1)->spins > spins_before);
+
+    /* Hand the same job to all of them and join in. */
+    shared_counter = 0;
+    test_lock = 0;
+    for (u32 i = 0; i < SMP_MAX_CPUS; i++) seen_arg[i] = 0;
+
+    u32 dispatched = 0;
+    for (u32 i = 1; i < smp_cpu_count(); i++)
+        if (smp_run(i, smp_add_work, (void *)i)) dispatched++;
+    ok("work was accepted by every other processor", dispatched == helpers);
+
+    smp_add_work((void *)0);              /* this processor does a share too */
+
+    bool joined = true;
+    for (u32 i = 1; i < smp_cpu_count(); i++)
+        if (!smp_wait(i, 8000)) joined = false;
+    ok("they all finished", joined);
+
+    ok("the count is exact, so the lock held",
+       shared_counter == SMP_ADDS * (helpers + 1));
+
+    bool args_ok = (seen_arg[0] == 1);
+    for (u32 i = 1; i < smp_cpu_count(); i++)
+        if (smp_cpu(i)->started && seen_arg[i] != i + 1) args_ok = false;
+    ok("each one was handed its own argument", args_ok);
+
+    bool counted = true;
+    for (u32 i = 1; i < smp_cpu_count(); i++)
+        if (smp_cpu(i)->started && smp_cpu(i)->jobs != 1) counted = false;
+    ok("each one recorded exactly one job", counted);
+
+    /* Nothing should be left holding the lock. */
+    spin_lock(&test_lock);
+    spin_unlock(&test_lock);
+    ok("the lock is free afterwards", true);
+}
+
 int selftest_run(void) {
     passed = failed = 0;
     kprintf("\n=== nyx self test ===\n");
@@ -620,6 +708,7 @@ int selftest_run(void) {
     kprintf("[window server]\n"); test_winsrv();
     kprintf("[built-in programs]\n"); test_builtin();
     kprintf("[theme]\n");      test_theme();
+    kprintf("[processors]\n"); test_smp();
     kprintf("\n%d passed, %d failed\n", passed, failed);
     kprintf(failed ? "SELFTEST_FAIL\n" : "SELFTEST_PASS\n");
     return failed;

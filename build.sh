@@ -16,8 +16,10 @@ fi
 
 mkdir -p build
 
-# The user programs go inside the kernel image, so they are built first.
+# The user programs and the SMP trampoline go inside the kernel image, so
+# they are built first.
 ZIG="$ZIG" bash userland/build.sh
+ZIG="$ZIG" bash bootloader/build.sh
 
 SRC=$(find boot kernel -name '*.c' -o -name '*.S' | sort | tr '\n' ' ')
 

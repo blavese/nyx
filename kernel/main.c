@@ -24,6 +24,8 @@
 #include "syscall.h"
 #include "shell.h"
 #include "winsrv.h"
+#include "smp.h"
+#include "acpi.h"
 #include "vfs.h"
 #include "builtin.h"
 #include "selftest.h"
@@ -130,6 +132,15 @@ void kmain(u32 magic, u32 mbi_addr) {
     kprintf("  progs   %d built in\n", builtin_count_programs());
 
     timer_init(100); kprintf("  timer   100 Hz\n");
+
+    /* Needs the timer: the startup sequence is defined in microseconds and
+       there is nothing to measure them with before it. */
+    smp_init();
+    if (smp_cpu_count() > 1)
+        kprintf("  cpu     %d processors, %d started\n",
+                smp_cpu_count(), smp_started());
+    else
+        kprintf("  cpu     1 processor\n");
     if (netdev_init()) {
         net_init();
         const u8 *m = net_mac();

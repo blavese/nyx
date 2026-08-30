@@ -9,6 +9,13 @@
  * The paths are relative to the repository root, which is where build.sh
  * runs the compiler from. */
 .section .rodata
+.balign 4096
+.global trampoline_start
+.global trampoline_end
+trampoline_start:
+.incbin "build/trampoline.bin"
+trampoline_end:
+
 .balign 4
 
 .global builtin_hello_start
