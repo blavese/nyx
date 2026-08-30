@@ -37,7 +37,7 @@ run() {
         > "$out" 2>&1 || true
 
   echo "--- $what ---"
-  for want in "nyx 0.6.1" "video" "progs" "nyx>" "$what"; do
+  for want in "nyx 0.6.2" "video" "progs" "nyx>" "$what"; do
     if grep -qF "$want" "$out"; then echo "  PASS  $want"
     else echo "  FAIL  $want"; fails=$((fails+1)); fi
   done
