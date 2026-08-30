@@ -5,6 +5,10 @@
    QEMU's std VGA implements. */
 
 bool fb_init(u32 width, u32 height);
+
+/* Takes over a screen a bootloader already set up, which is the only option
+   on a machine with no VBE to ask. */
+bool fb_adopt(u64 base, u32 width, u32 height, u32 pitch_pixels);
 bool fb_active(void);
 
 u32  fb_width(void);

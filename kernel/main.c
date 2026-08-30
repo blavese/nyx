@@ -162,7 +162,14 @@ void kmain(handoff_t *h) {
     /* Needs paging to map the aperture and the heap for the back
        buffer, so this is the earliest it can come up. Anything
        printed before now is only in the serial log. */
-    if (fb_init(1024, 768)) {
+    /* A UEFI loader has already chosen a mode and there is no way to ask
+       for another once the firmware is gone, so take what it gave. Only a
+       machine with a BIOS gets to pick. */
+    bool have_screen = h->fb_base
+        ? fb_adopt(h->fb_base, h->fb_width, h->fb_height, h->fb_pitch)
+        : fb_init(1024, 768);
+
+    if (have_screen) {
         fbcon_init();
         vga_set_color(VGA_LCYAN, VGA_BLACK);
         kprintf("  %s %s\n", KERNEL_NAME, KERNEL_VERSION);

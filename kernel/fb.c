@@ -63,6 +63,33 @@ u32  fb_height(void) { return height; }
 u32  fb_pitch(void)  { return pitch; }
 u8  *fb_pixels(void) { return back; }
 
+/* Adopts a screen the firmware already set up.
+ *
+ * On a UEFI machine there is no VBE and no way to change the mode after the
+ * firmware is gone, so whatever the loader chose is what there is. The
+ * aperture is wherever the firmware put it, which on a real machine is
+ * usually a long way above where the kernel identity maps. */
+bool fb_adopt(u64 base, u32 w, u32 h, u32 pitch_pixels) {
+    active = false;
+    if (!base || !w || !h) return false;
+
+    width = w;
+    height = h;
+    pitch = pitch_pixels * 4;
+
+    u64 bytes = (u64)pitch * height;
+    if (!paging_map_device(base, bytes)) return false;
+    lfb = (u8 *)base;
+
+    back = (u8 *)kmalloc(bytes);
+    if (!back) return false;
+
+    active = true;
+    fb_clear(0);
+    fb_flush();
+    return true;
+}
+
 bool fb_init(u32 w, u32 h) {
     active = false;
 
@@ -96,7 +123,7 @@ bool fb_init(u32 w, u32 h) {
 
     /* Map the aperture. It sits far above the identity mapped region, so it
        needs page table entries of its own. */
-    u32 bytes = pitch * height;
+    u64 bytes = (u64)pitch * height;
     for (u64 off = 0; off < bytes; off += PAGE_SIZE) {
         if (!map_page(phys + off, phys + off, PTE_PRESENT | PTE_RW)) {
             vbe_write(VBE_ENABLE, VBE_DISABLED);
