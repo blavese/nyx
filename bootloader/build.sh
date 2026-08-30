@@ -10,6 +10,9 @@ if [ -z "$ZIG" ]; then
 fi
 [ -z "$ZIG" ] && { echo "zig not found" >&2; exit 1; }
 
+# GNU stat and BSD stat spell this differently, and macOS ships the BSD one.
+filesize() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null || echo '?'; }
+
 mkdir -p build
 "$ZIG" cc -target x86-freestanding-none -mcpu=i686 \
   -ffreestanding -nostdlib -static -c \
@@ -18,16 +21,16 @@ mkdir -p build
 "$ZIG" ld.lld -T bootloader/link.ld -o build/cdboot.elf build/cdboot.o
 
 python tools/flatten.py build/cdboot.elf build/cdboot.bin 0x7C00
-echo "built build/cdboot.bin ($(stat -c %s build/cdboot.bin) bytes)"
+echo "built build/cdboot.bin ($(filesize build/cdboot.bin) bytes)"
 
 "$ZIG" cc -target x86-freestanding-none -mcpu=i686   -ffreestanding -nostdlib -static -c   -o build/mbr.o bootloader/mbr.S
 "$ZIG" ld.lld -T bootloader/mbr.ld -o build/mbr.elf build/mbr.o
 python tools/flatten.py build/mbr.elf build/mbr.bin 0x7C00
-echo "built build/mbr.bin ($(stat -c %s build/mbr.bin) bytes)"
+echo "built build/mbr.bin ($(filesize build/mbr.bin) bytes)"
 
 # The SMP trampoline is the same kind of thing: 16-bit code that has to sit
 # at a fixed low address with no relocation, so it is a flat binary too.
 "$ZIG" cc -target x86-freestanding-none -mcpu=i686   -ffreestanding -nostdlib -static -c   -o build/trampoline.o bootloader/trampoline.S
 "$ZIG" ld.lld -T bootloader/trampoline.ld -o build/trampoline.elf build/trampoline.o
 python tools/flatten.py build/trampoline.elf build/trampoline.bin 0x8000
-echo "built build/trampoline.bin ($(stat -c %s build/trampoline.bin) bytes)"
+echo "built build/trampoline.bin ($(filesize build/trampoline.bin) bytes)"

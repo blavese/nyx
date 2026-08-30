@@ -298,6 +298,7 @@ static void execute(char *buf) {
         int rc = http_get(argv[1], path, save);
         if (rc == HTTP_ERR_RESOLVE) kprintf("cannot resolve %s\n", argv[1]);
         else if (rc == HTTP_ERR_CONNECT) kprintf("could not connect\n");
+        else if (rc == HTTP_ERR_TOOLONG) kprintf("the host and path do not fit in a request\n");
         else if (rc < 0) kprintf("fetch failed\n");
     } else if (!strcmp(c, "resolve")) {
         if (argc < 2) { kprintf("usage: resolve HOSTNAME\n"); return; }

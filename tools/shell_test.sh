@@ -14,6 +14,31 @@ QEMU="${QEMU:-}"
 [ -z "$QEMU" ] && QEMU=$(command -v qemu-system-i386 || true)
 [ -z "$QEMU" ] && QEMU="/c/Program Files/qemu/qemu-system-i386.exe"
 
+run_with_timeout() {
+  local seconds="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$seconds" "$@"
+  else
+    python3 -c '
+import subprocess, sys
+p = subprocess.Popen(sys.argv[2:])
+try:
+    raise SystemExit(p.wait(timeout=float(sys.argv[1])))
+except subprocess.TimeoutExpired:
+    p.terminate()
+    try:
+        p.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
+    raise SystemExit(124)
+' "$seconds" "$@"
+  fi
+}
+
 bash build.sh >/dev/null
 OUT=$(mktemp)
 
@@ -55,7 +80,7 @@ feed() {
   sleep 2.5
 }
 
-feed | timeout 90 "$QEMU" -kernel build/nyx.elf -m 64 -no-reboot -display none -serial stdio > "$OUT" 2>&1 || true
+feed | run_with_timeout 90 "$QEMU" -kernel build/nyx.elf -m 64 -no-reboot -display none -serial stdio > "$OUT" 2>&1 || true
 
 fails=0
 check() {
@@ -72,6 +97,7 @@ check "no such file"             "cat reports a deleted file as missing"
 check "/docs"                    "cd moves into a directory"
 check "nested file"              "a file written inside one reads back by path"
 check "PID"                      "ps prints the task table"
+check "running "                 "ps formats task state columns"
 check "physical:"                "mem reports physical memory"
 check "spawned pid"              "spawn creates a task"
 check "hello from a program"     "exec runs a built-in ELF in ring 3"

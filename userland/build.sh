@@ -11,6 +11,9 @@ if [ -z "$ZIG" ]; then
 fi
 [ -z "$ZIG" ] && { echo "zig not found" >&2; exit 1; }
 
+# GNU stat and BSD stat spell this differently, and macOS ships the BSD one.
+filesize() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null || echo '?'; }
+
 mkdir -p ../build/user
 for src in *.c; do
   name="${src%.c}"
@@ -21,5 +24,5 @@ for src in *.c; do
     -Wall -Wextra \
     -Wl,-T,link.ld -Wl,--build-id=none \
     -o "../build/user/$name.elf" "$src"
-  echo "  $name.elf  $(stat -c %s "../build/user/$name.elf") bytes"
+  echo "  $name.elf  $(filesize "../build/user/$name.elf") bytes"
 done

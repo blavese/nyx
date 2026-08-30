@@ -146,12 +146,14 @@ static bool read_mac(void) {
     return true;
 }
 
-static void rx_init(void) {
+static bool rx_init(void) {
     void *raw;
     rx_ring = (rx_desc_t *)alloc_aligned(sizeof(rx_desc_t) * RX_DESCS, 16, &raw);
+    if (!rx_ring) return false;
 
     for (int i = 0; i < RX_DESCS; i++) {
         rx_buf[i] = (u8 *)kmalloc(BUF_SIZE);
+        if (!rx_buf[i]) return false;
         memset(rx_buf[i], 0, BUF_SIZE);
         rx_ring[i].addr = (u64)(u32)rx_buf[i];
         rx_ring[i].status = 0;
@@ -165,14 +167,17 @@ static void rx_init(void) {
     rx_cur = 0;
 
     wr(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC | RCTL_SZ_2048 | RCTL_UPE | RCTL_MPE);
+    return true;
 }
 
-static void tx_init(void) {
+static bool tx_init(void) {
     void *raw;
     tx_ring = (tx_desc_t *)alloc_aligned(sizeof(tx_desc_t) * TX_DESCS, 16, &raw);
+    if (!tx_ring) return false;
 
     for (int i = 0; i < TX_DESCS; i++) {
         tx_buf[i] = (u8 *)kmalloc(BUF_SIZE);
+        if (!tx_buf[i]) return false;
         memset(tx_buf[i], 0, BUF_SIZE);
         tx_ring[i].addr = (u64)(u32)tx_buf[i];
         tx_ring[i].status = 1;        /* descriptor done: free to use */
@@ -188,6 +193,7 @@ static void tx_init(void) {
 
     wr(REG_TCTL, TCTL_EN | TCTL_PSP | TCTL_CT | TCTL_COLD);
     wr(REG_TIPG, 0x0060200A);
+    return true;
 }
 
 static void handle_rx(void) {
@@ -212,12 +218,18 @@ static void e1000_isr(registers_t *r) {
 }
 
 bool e1000_send(const void *data, u16 len) {
-    if (!up || len > BUF_SIZE) return false;
-    if (len < 60) len = 60;
+    if (!up || len == 0 || len > BUF_SIZE) return false;
+
+    /* Ethernet will not carry a frame shorter than 60 bytes. Copy what the
+       caller actually gave us and zero the rest: reading up to the padded
+       length instead would run off the end of the caller's frame and put
+       whatever followed it, which is the previous packet, on the wire. */
+    u16 total = len < 60 ? 60 : len;
 
     u32 i = tx_cur;
     memcpy(tx_buf[i], data, len);
-    tx_ring[i].length = len;
+    if (total > len) memset(tx_buf[i] + len, 0, (u32)(total - len));
+    tx_ring[i].length = total;
     tx_ring[i].cmd = (1 << 0) | (1 << 1) | (1 << 3);  /* EOP, IFCS, RS */
     tx_ring[i].status = 0;
 
@@ -270,8 +282,7 @@ bool e1000_init(void) {
 
     if (!read_mac()) return false;
 
-    rx_init();
-    tx_init();
+    if (!rx_init() || !tx_init()) return false;
 
     register_interrupt_handler(32 + dev.irq, e1000_isr);
     pic_unmask(dev.irq);

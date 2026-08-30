@@ -22,9 +22,17 @@
 /* User space is everything above the kernel's identity mapped region. */
 #define USER_MIN (KERNEL_SPACE_MB * 1024u * 1024u)
 
-/* Confirms a user buffer is really mapped, really belongs to user space, and
-   does not run off the end of what was mapped. A missing check here is how a
-   kernel gets talked into reading or writing wherever it is asked to. */
+/* Confirms a user buffer is one the caller could have reached on its own:
+   above the kernel, not wrapped, and mapped user-accessible for its whole
+   length. A missing check here is how a kernel gets talked into reading or
+   writing wherever it is asked to.
+
+   Merely being mapped is not enough. Every address space inherits the
+   kernel's high mappings, so the framebuffer aperture and the register
+   windows of the disk and network controllers are all present in a user
+   directory; they are simply not reachable from ring 3 because their pages
+   lack the user bit. Checking presence alone would let a program name one of
+   those addresses and have the kernel write to it on the program's behalf. */
 static bool user_range_ok(u32 addr, u32 len) {
     if (len == 0) return true;
     if (addr < USER_MIN) return false;
@@ -32,8 +40,7 @@ static bool user_range_ok(u32 addr, u32 len) {
 
     u32 dir = paging_current_directory();
     for (u32 a = addr & ~0xFFFu; a < addr + len; a += PAGE_SIZE) {
-        u32 phys = virt_to_phys_in(dir, a);
-        if (!phys) return false;
+        if (!virt_is_user_in(dir, a)) return false;
     }
     return true;
 }
