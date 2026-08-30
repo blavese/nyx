@@ -155,20 +155,6 @@ u32 scheduler_switch(u32 esp) {
     task_t *next = pick_next(current);
     if (!next) return esp;
 
-    /* Reap anything that finished, but never the task we are about to run. */
-    if (head) {
-        task_t *p = head;
-        for (u32 i = 0; i < 4096; i++) {
-            task_t *n = p->next;
-            if (n != p && n->state == TASK_DEAD && n != next && n != head) {
-                p->next = n->next;
-                kfree((void *)n->stack_base);
-                kfree(n);
-            } else p = n;
-            if (p == head) break;
-        }
-    }
-
     current = next;
     current->state = TASK_RUNNING;
     current->slices++;
@@ -179,6 +165,24 @@ u32 scheduler_switch(u32 esp) {
 
     u32 want = current->dir ? current->dir : paging_kernel_directory();
     if (want != paging_current_directory()) paging_switch(want);
+
+    /* Reap anything that finished, but never the task we are about to run.
+       Switch address spaces first: the task that just exited may still own
+       the active page directory, and freeing the CR3 currently in use would
+       tear the floor out from under this code. */
+    if (head) {
+        task_t *p = head;
+        for (u32 i = 0; i < 4096; i++) {
+            task_t *n = p->next;
+            if (n != p && n->state == TASK_DEAD && n != current && n != head) {
+                p->next = n->next;
+                if (n->dir) paging_free_directory(n->dir);
+                kfree((void *)n->stack_base);
+                kfree(n);
+            } else p = n;
+            if (p == head) break;
+        }
+    }
 
     return current->esp;
 }

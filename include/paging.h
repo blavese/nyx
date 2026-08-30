@@ -18,6 +18,11 @@ u32  virt_to_phys(u32 virt);
 bool map_page_in(u32 dir_phys, u32 virt, u32 phys, u32 flags);
 u32  virt_to_phys_in(u32 dir_phys, u32 virt);
 
+/* True only when ring 3 may reach this address itself, which needs the user
+   bit on both the directory entry and the page. Being mapped is not enough:
+   every address space carries the kernel's high mappings too. */
+bool virt_is_user_in(u32 dir_phys, u32 virt);
+
 /* A fresh address space sharing the kernel's mappings. Returns the physical
    address of the directory, or 0. */
 u32  paging_new_directory(void);

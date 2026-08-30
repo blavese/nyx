@@ -102,6 +102,39 @@ static void test_paging(void) {
     pmm_free_frame(phys);
 }
 
+/* The rule a system call leans on when it validates a pointer: being mapped
+   in the caller's address space is not the same as being reachable from ring
+   3. Every space inherits the kernel's high mappings, so a check that only
+   asked whether a page was present would accept the framebuffer and the
+   controllers' register windows. */
+static void test_user_access(void) {
+    u32 dir = paging_new_directory();
+    if (!dir) { ok("scratch address space", false); return; }
+
+    u32 kp = pmm_alloc_frame(), up = pmm_alloc_frame(), kp2 = pmm_alloc_frame();
+    if (!kp || !up || !kp2) { ok("scratch frames", false); return; }
+
+    /* A kernel mapping above where user space begins, which is exactly what
+       the framebuffer aperture is. */
+    map_page_in(dir, 0x38000000, kp, PTE_PRESENT | PTE_RW);
+    ok("a kernel page above user space is mapped",
+       virt_to_phys_in(dir, 0x38000000) != 0);
+    ok("but ring 3 cannot reach it", !virt_is_user_in(dir, 0x38000000));
+
+    /* Two pages sharing one table: mapping the user one widens the directory
+       entry, and its kernel neighbour must stay out of reach anyway. */
+    map_page_in(dir, 0x39000000, up,  PTE_PRESENT | PTE_RW | PTE_USER);
+    map_page_in(dir, 0x39001000, kp2, PTE_PRESENT | PTE_RW);
+    ok("a user page is reachable", virt_is_user_in(dir, 0x39000000));
+    ok("its kernel neighbour in the same table is not",
+       !virt_is_user_in(dir, 0x39001000));
+    ok("an unmapped address is not", !virt_is_user_in(dir, 0x3A000000));
+
+    paging_free_directory(dir);
+    pmm_free_frame(kp);
+    pmm_free_frame(kp2);
+}
+
 static void test_fs(void) {
     char buf[64];
     u32 size = 0;
@@ -375,6 +408,7 @@ static void test_userspace(void) {
        moving is direct evidence that ring 3 code ran and crossed back in.
        Counting tasks would race: it can finish before the check. */
     u32 before = syscall_count();
+    u32 free_before = pmm_free_frames();
     int pid = user_spawn_stub("selftest-ring3");
     ok("a ring 3 task can be created", pid > 0);
     if (pid <= 0) return;
@@ -382,6 +416,7 @@ static void test_userspace(void) {
     task_wait((u32)pid);
     ok("it reached exit on its own", !task_alive((u32)pid));
     ok("ring 3 code issued system calls", syscall_count() >= before + 7);
+    ok("its address space was reclaimed", pmm_free_frames() == free_before);
 }
 
 
@@ -423,6 +458,8 @@ static void test_gfx(void) {
     char buf[32];
     kformat(buf, sizeof(buf), "%d/%s/%x", 42, "ok", 255);
     ok("kformat formats", strcmp(buf, "42/ok/ff") == 0);
+    kformat(buf, sizeof(buf), "%-4s/%-3d", "x", 7);
+    ok("kformat left aligns", strcmp(buf, "x   /7  ") == 0);
     kformat(buf, 6, "abcdefghij");
     ok("kformat respects the buffer size", strlen(buf) == 5);
 
@@ -488,8 +525,15 @@ static void test_winsrv(void) {
     ok("commit is accepted", winsrv_commit(PID, h));
     ok("a foreign commit is not", !winsrv_commit(OTHER, h));
 
+    /* Closing goes through wm_close, which must not release a surface the
+       server carved out of a larger allocation: that pointer is not one
+       kmalloc returned, and the server frees the real one itself. A heap
+       that still balances afterwards is the evidence. */
+    u32 heap_before_close = heap_used();
     ok("the window closes", winsrv_close(PID, h));
     ok("the handle is dead afterwards", winsrv_surface(PID, h, paging_current_directory()) == 0);
+    ok("closing it gave the heap back rather than corrupting it",
+       heap_used() < heap_before_close);
 
     /* Everything a task owned goes away with it. */
     int a = winsrv_create(PID, "one", 40, 40);
@@ -689,6 +733,7 @@ int selftest_run(void) {
     kprintf("[string]\n");     test_string();
     kprintf("[physical memory]\n"); test_pmm();
     kprintf("[paging]\n");     test_paging();
+    kprintf("[user access]\n"); test_user_access();
     kprintf("[heap]\n");       test_heap();
     kprintf("[filesystem]\n"); test_fs();
     kprintf("[paths]\n");      test_paths();
