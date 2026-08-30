@@ -59,9 +59,9 @@ static const struct {
     const char *label;
     const char *program;
 } MENU[] = {
-    { "Terminal",     "/term.elf" },
-    { "Paint",        "/paint.elf" },
-    { "Settings",     "/settings.elf" },
+    { "Terminal",     "/bin/term" },
+    { "Paint",        "/bin/paint" },
+    { "Settings",     "/bin/settings" },
     { "System info",  0 },
     { "Close all",    0 },
     { "Leave desktop", 0 },

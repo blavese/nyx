@@ -8,6 +8,8 @@
 #include "paging.h"
 #include "fs.h"
 #include "vfs.h"
+#include "layout.h"
+#include "sysfs.h"
 #include "timer.h"
 #include "sched.h"
 #include "wait.h"
@@ -555,15 +557,15 @@ static void test_builtin(void) {
     ok("programs ship with the kernel", builtin_count_programs() >= 3);
 
     u32 size = 0;
-    ok("paint is one of them", vfs_stat("/paint.elf", &size, 0) && size > 1024);
+    ok("paint is one of them", vfs_stat("/bin/paint", &size, 0) && size > 1024);
 
     u8 head[4] = { 0, 0, 0, 0 };
-    vfs_read("/paint.elf", head, sizeof(head));
+    vfs_read("/bin/paint", head, sizeof(head));
     ok("and it is a real ELF",
        head[0] == 0x7F && head[1] == 'E' && head[2] == 'L' && head[3] == 'F');
 
-    ok("they cannot be overwritten", !vfs_write("/paint.elf", "x", 1));
-    ok("nor deleted", !vfs_delete("/paint.elf"));
+    ok("they cannot be overwritten", !vfs_write("/bin/paint", "x", 1));
+    ok("nor deleted", !vfs_delete("/bin/paint"));
 
     /* The disk must not be holding its own copy, or rebuilding the kernel
        would change nothing on a machine that had already booted once. */
@@ -572,7 +574,7 @@ static void test_builtin(void) {
         bool on_disk = false;
         for (u32 i = 0; ; i++) {
             if (fat_list("/", i, name, 0, 0) != 1) break;
-            if (strcmp(name, "paint.elf") == 0) on_disk = true;
+            if (strcmp(name, "paint") == 0) on_disk = true;
         }
         ok("and are not written to the disk", !on_disk);
     }
@@ -809,6 +811,112 @@ static void test_wait_timeout(void) {
     task_wait(t->pid);
 }
 
+/* --- the live tree --------------------------------------------------------
+
+   /sys is generated on every read, which is the property worth checking:
+   the same file read twice while something changes must not give the same
+   answer twice. Everything else here is that nothing can write to it. */
+
+static bool contains(const char *hay, const char *needle) {
+    u32 n = strlen(needle);
+    for (u32 i = 0; hay[i]; i++)
+        if (strncmp(hay + i, needle, n) == 0) return true;
+    return false;
+}
+
+static void test_live_tree(void) {
+    char buf[SYSFS_MAX];
+    bool is_dir = false;
+    u32 size = 0;
+
+    ok("/sys is a directory", vfs_stat("/sys", 0, &is_dir) && is_dir);
+    ok("/bin is a directory", vfs_stat("/bin", 0, &is_dir) && is_dir);
+
+    /* Both show up in a listing of the root, so ls finds them without them
+       existing on any volume. */
+    bool saw_sys = false, saw_bin = false;
+    char name[VFS_NAME_MAX];
+    for (u32 i = 0; vfs_list("/", i, name, 0, 0) == 1 && i < 64; i++) {
+        if (strcmp(name, "sys") == 0) saw_sys = true;
+        if (strcmp(name, "bin") == 0) saw_bin = true;
+    }
+    ok("and both are listed in the root", saw_sys && saw_bin);
+
+    int n = vfs_read("/sys/version", buf, sizeof(buf) - 1);
+    ok("a generated file reads", n > 0);
+    if (n > 0) buf[n] = 0; else buf[0] = 0;
+    ok("and says what this is", contains(buf, KERNEL_NAME) && contains(buf, KERNEL_VERSION));
+
+    ok("its size is known before reading it",
+       vfs_stat("/sys/version", &size, 0) && size == (u32)n);
+
+    n = vfs_read("/sys/memory", buf, sizeof(buf) - 1);
+    if (n > 0) buf[n] = 0; else buf[0] = 0;
+    ok("memory reports frames", contains(buf, "frames"));
+    ok("and the heap", contains(buf, "heap"));
+
+    n = vfs_read("/sys/tasks", buf, sizeof(buf) - 1);
+    if (n > 0) buf[n] = 0; else buf[0] = 0;
+    ok("tasks lists this one", contains(buf, "selftest"));
+
+    n = vfs_read("/sys/devices", buf, sizeof(buf) - 1);
+    if (n > 0) buf[n] = 0; else buf[0] = 0;
+    ok("devices reports the video mode", contains(buf, "video"));
+
+    /* The point of the whole thing: nothing is cached. Read the clock twice
+       with time passing in between and the two must differ. */
+    char first[SYSFS_MAX];
+    int a = vfs_read("/sys/uptime", first, sizeof(first) - 1);
+    if (a > 0) first[a] = 0; else first[0] = 0;
+    sleep_ms(60);
+    int b = vfs_read("/sys/uptime", buf, sizeof(buf) - 1);
+    if (b > 0) buf[b] = 0; else buf[0] = 0;
+    ok("reading the same file twice gives what is true now",
+       a > 0 && b > 0 && strcmp(first, buf) != 0);
+
+    /* And it is genuinely read-only, through every door. */
+    ok("a generated file cannot be written", !vfs_write("/sys/memory", "x", 1));
+    ok("nor deleted", !vfs_delete("/sys/memory"));
+    ok("nor opened for writing", vfs_open("/sys/memory", O_WRITE) < 0);
+    ok("a directory cannot be made inside it", !vfs_mkdir("/sys/mine"));
+    ok("and /bin is the same", !vfs_write("/bin/paint", "x", 1));
+    ok("but it can be opened for reading", vfs_open("/sys/memory", O_READ) >= 0);
+    vfs_close(vfs_open("/sys/memory", O_READ));
+
+    ok("something that is not there says so", vfs_read("/sys/nothing", buf, 16) < 0);
+    ok("and does not stat", !vfs_stat("/sys/nothing", 0, 0));
+}
+
+static void test_layout(void) {
+    layout_init();
+
+    bool is_dir = false;
+    ok("/home exists", vfs_stat("/home", 0, &is_dir) && is_dir);
+    ok("/doc exists", vfs_stat("/doc", 0, &is_dir) && is_dir);
+    ok("/cfg exists", vfs_stat("/cfg", 0, &is_dir) && is_dir);
+    ok("/tmp exists", vfs_stat("/tmp", 0, &is_dir) && is_dir);
+
+    u32 size = 0;
+    ok("the documentation shipped with it", vfs_stat("/doc/readme", &size, 0) && size > 100);
+
+    /* Seeding is once per disk, not once per boot: a second pass must not
+       put back a file somebody deleted. */
+    vfs_delete("/home/notes");
+    vfs_write("/home/kept", "mine", 4);
+    layout_init();
+    ok("running it again does not restore a deleted file", !vfs_stat("/home/notes", 0, 0));
+    ok("and leaves what the user wrote alone", vfs_stat("/home/kept", &size, 0) && size == 4);
+
+    /* /tmp is emptied, which is the only thing that makes it a scratch
+       directory rather than another place files accumulate. */
+    vfs_write("/tmp/scratch", "gone next boot", 14);
+    ok("a file can be put in /tmp", vfs_stat("/tmp/scratch", 0, 0));
+    layout_init();
+    ok("and starting up empties it", !vfs_stat("/tmp/scratch", 0, 0));
+
+    vfs_delete("/home/kept");
+}
+
 int selftest_run(void) {
     passed = failed = 0;
     kprintf("\n=== nyx self test ===\n");
@@ -835,6 +943,8 @@ int selftest_run(void) {
     kprintf("[window server]\n"); test_winsrv();
     kprintf("[built-in programs]\n"); test_builtin();
     kprintf("[theme]\n");      test_theme();
+    kprintf("[live tree]\n"); test_live_tree();
+    kprintf("[layout]\n");    test_layout();
     kprintf("[waiting]\n");    test_waiting();
     kprintf("[wait timeouts]\n"); test_wait_timeout();
     kprintf("[processors]\n"); test_smp();

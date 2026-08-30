@@ -57,7 +57,7 @@ feed() {
   sleep 2.5
   type_line "uname"
   type_line "ls"
-  type_line "cat hello.txt"
+  type_line "cat /doc/readme"
   type_line "write notes.txt shell wrote this"
   type_line "cat notes.txt"
   type_line "rm notes.txt"
@@ -72,9 +72,9 @@ feed() {
   type_line "ps"
   type_line "mem"
   type_line "spawn"
-  type_line "exec hello.elf"
+  type_line "exec /bin/hello"
   sleep 1.5          # exec prints a lot; let the guest drain first
-  type_line "exec wintest.elf"
+  type_line "exec /bin/wintest"
   sleep 1.5
   type_line "echo done testing"
   sleep 2.5
@@ -90,11 +90,11 @@ check() {
 
 echo "=== shell test ==="
 check "nyx 0.7.0 x86_64"           "uname reports the kernel"
-check "readme.txt"               "ls shows the seeded files"
-check "hello from a filesystem"  "cat prints file contents"
+check "notes"                    "ls shows the seeded files"
+check "written from scratch"     "cat prints file contents"
 check "shell wrote this"         "write then cat round trips"
 check "no such file"             "cat reports a deleted file as missing"
-check "/docs"                    "cd moves into a directory"
+check "/home/docs"               "cd moves into a directory"
 check "nested file"              "a file written inside one reads back by path"
 check "PID"                      "ps prints the task table"
 check "running "                 "ps formats task state columns"

@@ -12,7 +12,7 @@ __attribute__((section(".text._start"))) void _start(void) {
 int main(void) {
     puts("spawntest: starting hello.elf from ring 3\n");
 
-    int pid = spawn("/hello.elf");
+    int pid = spawn("/bin/hello");
     if (pid < 0) { puts("spawntest: spawn failed\n"); return 1; }
     puts("spawntest: pid "); putn(pid); putc('\n');
 
@@ -23,7 +23,7 @@ int main(void) {
     /* count.elf runs for a while, so waiting for it has to actually block
        rather than return early. */
     int t0 = ticks();
-    int pid2 = spawn("/count.elf");
+    int pid2 = spawn("/bin/count");
     if (pid2 < 0) { puts("spawntest: second spawn failed\n"); return 1; }
     int st2 = wait_for(pid2);
     int elapsed = ticks() - t0;

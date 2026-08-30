@@ -117,6 +117,14 @@ void kprintf(const char *fmt, ...) {
     va_end(ap);
 }
 
+int kvformat(char *buf, size_t cap, const char *fmt, va_list ap) {
+    if (!buf || cap == 0) return 0;
+    sink_t s = { buf, cap, 0 };
+    format(&s, fmt, ap);
+    buf[s.len < cap ? s.len : cap - 1] = 0;
+    return (int)s.len;
+}
+
 int kformat(char *buf, size_t cap, const char *fmt, ...) {
     if (!buf || cap == 0) return 0;
     sink_t s = { buf, cap, 0 };

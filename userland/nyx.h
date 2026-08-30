@@ -1,4 +1,4 @@
-/* The entire user-facing interface: thirty-one system calls and a little
+/* The entire user-facing interface: thirty-six system calls and a little
    sugar. There is no libc here, and nothing is linked in from the kernel;
    every call below crosses the ring boundary through int 0x80. */
 #pragma once
@@ -8,6 +8,12 @@ typedef unsigned short     u16;
 typedef unsigned char      u8;
 typedef int                i32;
 typedef unsigned long long u64;
+
+/* _Bool is a keyword; the spellings are the header, which there is not one
+   of here. */
+typedef _Bool bool;
+#define true  1
+#define false 0
 
 /* Wide enough to hold a pointer, which on this machine an int is not. Every
    argument that crosses into the kernel goes through one of these. */
@@ -334,6 +340,22 @@ typedef struct {
     u32 buttons;
     u32 key;
 } win_event;
+
+/* Keys that are not characters arrive in the same field, above the range a
+   character can occupy, so one value carries either. */
+#define KEY_UP        0x100
+#define KEY_DOWN      0x101
+#define KEY_LEFT      0x102
+#define KEY_RIGHT     0x103
+#define KEY_HOME      0x104
+#define KEY_END       0x105
+#define KEY_PAGE_UP   0x106
+#define KEY_PAGE_DOWN 0x107
+#define KEY_DELETE    0x108
+#define KEY_INSERT    0x109
+#define KEY_F1        0x110      /* F1..F12 run consecutively */
+
+#define KEY_IS_SPECIAL(k) ((k) >= 0x100)
 
 static inline int win_create(const char *title, int w, int h) {
     return syscall(SYS_WIN_CREATE, (nyx_word)title, w, h);
