@@ -13,8 +13,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- the kernel travels inside the launcher, so the release is one file -->
-    <EmbeddedResource Include="..\build\nyx.elf" Link="nyx.elf" />
+    <!-- The kernel travels inside the launcher, so the release is one file.
+         It is the flat image rather than the ELF: no multiboot loader
+         will accept a 64-bit ELF, and QEMU's -kernel is one. -->
+    <EmbeddedResource Include="..\build\nyx.bin" Link="nyx.bin" />
   </ItemGroup>
 
 </Project>

@@ -14,12 +14,12 @@ public static class Emulator
 {
     private static readonly string[] LikelyPaths =
     {
-        @"C:\Program Files\qemu\qemu-system-i386.exe",
-        @"C:\Program Files (x86)\qemu\qemu-system-i386.exe",
-        @"C:\qemu\qemu-system-i386.exe",
+        @"C:\Program Files\qemu\qemu-system-x86_64.exe",
+        @"C:\Program Files (x86)\qemu\qemu-system-x86_64.exe",
+        @"C:\qemu\qemu-system-x86_64.exe",
     };
 
-    /// <summary>Full path to qemu-system-i386.exe, or null if it is not installed.</summary>
+    /// <summary>Full path to qemu-system-x86_64.exe, or null if it is not installed.</summary>
     public static string? FindQemu()
     {
         foreach (var p in LikelyPaths)
@@ -31,7 +31,7 @@ public static class Emulator
         {
             try
             {
-                var candidate = Path.Combine(dir.Trim(), "qemu-system-i386.exe");
+                var candidate = Path.Combine(dir.Trim(), "qemu-system-x86_64.exe");
                 if (File.Exists(candidate)) return candidate;
             }
             catch (ArgumentException) { /* malformed PATH entry */ }
@@ -45,7 +45,7 @@ public static class Emulator
             var loc = key?.GetValue("InstallLocation") as string;
             if (!string.IsNullOrEmpty(loc))
             {
-                var candidate = Path.Combine(loc, "qemu-system-i386.exe");
+                var candidate = Path.Combine(loc, "qemu-system-x86_64.exe");
                 if (File.Exists(candidate)) return candidate;
             }
         }
@@ -59,11 +59,11 @@ public static class Emulator
     {
         var dir = Path.Combine(Path.GetTempPath(), "nyx");
         Directory.CreateDirectory(dir);
-        var dest = Path.Combine(dir, "nyx.elf");
+        var dest = Path.Combine(dir, "nyx.bin");
 
         var asm = Assembly.GetExecutingAssembly();
         var name = asm.GetManifestResourceNames()
-                      .FirstOrDefault(n => n.EndsWith("nyx.elf", StringComparison.OrdinalIgnoreCase))
+                      .FirstOrDefault(n => n.EndsWith("nyx.bin", StringComparison.OrdinalIgnoreCase))
                    ?? throw new FileNotFoundException("The kernel is missing from this build.");
 
         using var src = asm.GetManifestResourceStream(name)
