@@ -1,7 +1,7 @@
 /* Registering the built-in programs.
  *
  * builtin.S pastes the ELF files into the kernel image; this hands them to
- * the VFS, which lists them in the root and serves reads straight out of the
+ * the VFS, which lists them in /bin and serves reads straight out of the
  * kernel image.
  *
  * They are deliberately not copied onto the disk. If they were, the first
@@ -24,14 +24,17 @@ typedef struct {
     const u8   *start, *end;
 } program_t;
 
+/* No extension. A program is a file in /bin; there is nothing else it
+   could be, and "paint" reads better than "paint.elf" everywhere it
+   appears. */
 static const program_t PROGRAMS[] = {
-    { "hello.elf",   builtin_hello_start,   builtin_hello_end },
-    { "count.elf",   builtin_count_start,   builtin_count_end },
-    { "wintest.elf", builtin_wintest_start, builtin_wintest_end },
-    { "term.elf",    builtin_term_start,    builtin_term_end },
-    { "spawntest.elf", builtin_spawntest_start, builtin_spawntest_end },
-    { "settings.elf", builtin_settings_start, builtin_settings_end },
-    { "paint.elf",   builtin_paint_start,   builtin_paint_end },
+    { "hello",     builtin_hello_start,     builtin_hello_end     },
+    { "count",     builtin_count_start,     builtin_count_end     },
+    { "wintest",   builtin_wintest_start,   builtin_wintest_end   },
+    { "term",      builtin_term_start,      builtin_term_end      },
+    { "spawntest", builtin_spawntest_start, builtin_spawntest_end },
+    { "settings",  builtin_settings_start,  builtin_settings_end  },
+    { "paint",     builtin_paint_start,     builtin_paint_end     },
 };
 
 #define N_PROGRAMS (sizeof(PROGRAMS) / sizeof(PROGRAMS[0]))

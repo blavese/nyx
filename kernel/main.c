@@ -29,6 +29,7 @@
 #include "acpi.h"
 #include "vfs.h"
 #include "builtin.h"
+#include "layout.h"
 #include "selftest.h"
 #include "string.h"
 #include "io.h"
@@ -60,16 +61,8 @@ static void selftest_task(void) {
 }
 
 static void init_task(void) {
-    /* Seeded once. Anything the user has since edited or deleted stays that
-       way, because writing these back every boot would undo their work. */
-    if (!vfs_stat("/readme.txt", 0, 0))
-        vfs_write("/readme.txt",
-                  "nyx is a small operating system written from scratch.\n"
-                  "It boots via multiboot, manages its own memory, and\n"
-                  "preempts its own tasks. Try: ls, cat, ps, mem, help\n", 158);
-    if (!vfs_stat("/hello.txt", 0, 0))
-        vfs_write("/hello.txt", "hello from a filesystem that lives on disk\n", 43);
-
+    layout_init();
+    vfs_chdir(layout_home());
     shell_task();
 }
 

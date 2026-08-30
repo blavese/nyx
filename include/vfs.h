@@ -6,8 +6,8 @@
  *
  * Underneath there are three sources, checked in this order:
  *
- *   1. programs built into the kernel image, which are read-only and never
- *      written to a disk
+ *   1. the live tree, which is /sys and /bin: files that are generated when
+ *      they are read, and the programs built into the kernel image
  *   2. the FAT16 volume, when a disk is present
  *   3. an in-memory filesystem, when there is no disk at all
  *
@@ -60,7 +60,7 @@ void vfs_release(u32 pid);              /* closes whatever a dead task left */
 /* Reading a whole file into a buffer the caller must free. */
 u8  *vfs_slurp(const char *path, u32 *size_out);
 
-/* Where the built-in programs are registered from. */
+/* Where the built-in programs are registered from. They appear in /bin. */
 void vfs_add_builtin(const char *name, const u8 *data, u32 size);
 u32  vfs_builtin_count(void);
 

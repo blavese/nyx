@@ -7,4 +7,5 @@ void kvprintf(const char *fmt, va_list ap);
 
 /* Formats into a buffer. Always terminates; returns the length it wanted. */
 int  kformat(char *buf, size_t cap, const char *fmt, ...);
+int  kvformat(char *buf, size_t cap, const char *fmt, va_list ap);
 void panic(const char *fmt, ...) __attribute__((noreturn));

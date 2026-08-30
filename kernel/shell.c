@@ -191,7 +191,7 @@ static void execute(char *buf) {
            3 program and draws on its own, through the window server, while
            this task runs the compositor. */
         u32 psize = 0;
-        u8 *pimg = vfs_slurp("/term.elf", &psize);
+        u8 *pimg = vfs_slurp("/bin/term", &psize);
         if (pimg) {
             int rc = user_spawn_elf("term", pimg, psize);
             if (rc < 0) kprintf("desktop: term: %s" "\n", elf_error(rc));
@@ -212,7 +212,7 @@ static void execute(char *buf) {
         if (rc > 0) kprintf("[%d] %s running in the background" "\n", rc, argv[1]);
         else kprintf("bg: %s: %s" "\n", argv[1], elf_error(rc));
     } else if (!strcmp(c, "exec")) {
-        if (argc < 2) { kprintf("usage: exec PROGRAM" "\n" "e.g. exec hello.elf" "\n"); return; }
+        if (argc < 2) { kprintf("usage: exec PROGRAM" "\n" "e.g. exec hello" "\n"); return; }
         u32 size = 0;
         u8 *img = vfs_slurp(argv[1], &size);
         if (!img) { kprintf("exec: %s: no such file" "\n", argv[1]); return; }

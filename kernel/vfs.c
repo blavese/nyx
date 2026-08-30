@@ -1,15 +1,16 @@
 /* The filesystem everything else talks to.
  *
- * There are three sources of files and one namespace over them. Programs
- * built into the kernel image come first and are read-only; then the FAT
- * volume if a disk is present; then an in-memory filesystem if it is not, so
- * that a machine with no disk still works rather than half working.
+ * There are three sources of files and one namespace over them. The live
+ * tree comes first and is read-only; then the FAT volume if a disk is
+ * present; then an in-memory filesystem if it is not, so that a machine with
+ * no disk still works rather than half working.
  *
  * The path handling is the fiddly part and it is all here rather than spread
  * around: everything below resolves a caller's path exactly once, at the
  * front door, and works in absolute paths after that.
  */
 #include "vfs.h"
+#include "sysfs.h"
 #include "fat.h"
 #include "fs.h"
 #include "blockdev.h"
@@ -18,40 +19,21 @@
 #include "string.h"
 #include "printf.h"
 
-/* --- built-in programs -------------------------------------------------- */
+/* --- the live tree ------------------------------------------------------ */
 
-#define MAX_BUILTIN 12
-
-typedef struct {
-    const char *name;
-    const u8   *data;
-    u32         size;
-} builtin_file_t;
-
-static builtin_file_t builtins[MAX_BUILTIN];
-static u32 n_builtin;
-
+/* Programs built into the kernel image are files in /bin, which the live
+   tree owns; this is only the door they come in through. */
 void vfs_add_builtin(const char *name, const u8 *data, u32 size) {
-    if (n_builtin >= MAX_BUILTIN) return;
-    builtins[n_builtin].name = name;
-    builtins[n_builtin].data = data;
-    builtins[n_builtin].size = size;
-    n_builtin++;
+    sysfs_add_program(name, data, size);
 }
 
-u32 vfs_builtin_count(void) { return n_builtin; }
+u32 vfs_builtin_count(void) { return sysfs_program_count(); }
 
-/* Built-ins live in the root and nowhere else, so only a path of the form
-   "/name" can name one. */
-static const builtin_file_t *builtin_at_path(const char *abs) {
-    if (abs[0] != '/') return 0;
-    const char *name = abs + 1;
-    if (!*name) return 0;
-    for (const char *p = name; *p; p++) if (*p == '/') return 0;
-
-    for (u32 i = 0; i < n_builtin; i++)
-        if (strcmp(builtins[i].name, name) == 0) return &builtins[i];
-    return 0;
+/* Paths the live tree answers for. Nothing written to the disk can shadow
+   one, and nothing here can be written to. */
+static bool live_path(const char *abs) {
+    return sysfs_owns(abs) ||
+           (strncmp(abs, "/bin", 4) == 0 && (abs[4] == 0 || abs[4] == '/'));
 }
 
 bool vfs_disk_backed(void) { return fat_mounted(); }
@@ -168,18 +150,25 @@ int vfs_list(const char *path, u32 index, char *name_out, u32 *size_out, bool *d
     char abs[VFS_PATH_MAX];
     if (!vfs_resolve(path ? path : ".", abs, sizeof(abs))) return -1;
 
-    /* The built-ins come first, and only in the root. */
-    bool at_root = (abs[0] == '/' && abs[1] == 0);
-    if (at_root && index < n_builtin) {
-        if (name_out) { strncpy(name_out, builtins[index].name, VFS_NAME_MAX - 1); name_out[VFS_NAME_MAX - 1] = 0; }
-        if (size_out) *size_out = builtins[index].size;
-        if (dir_out)  *dir_out = false;
-        return 1;
-    }
-    u32 below = at_root ? n_builtin : 0;
+    if (live_path(abs)) return sysfs_list(abs, index, name_out, size_out, dir_out);
 
-    if (fat_mounted()) return fat_list(abs, index - below, name_out, size_out, dir_out);
-    return ram_list(abs, index - below, name_out, size_out, dir_out);
+    /* The root has the live tree's two directories in it before anything
+       that is actually stored, so ls shows them without them existing on
+       the volume. */
+    bool at_root = (abs[0] == '/' && abs[1] == 0);
+    if (at_root) {
+        static const char *tops[] = { "bin", "sys" };
+        if (index < 2) {
+            if (name_out) { strncpy(name_out, tops[index], VFS_NAME_MAX - 1); name_out[VFS_NAME_MAX - 1] = 0; }
+            if (size_out) *size_out = 0;
+            if (dir_out)  *dir_out = true;
+            return 1;
+        }
+        index -= 2;
+    }
+
+    if (fat_mounted()) return fat_list(abs, index, name_out, size_out, dir_out);
+    return ram_list(abs, index, name_out, size_out, dir_out);
 }
 
 u32 vfs_count(const char *path) {
@@ -198,12 +187,7 @@ bool vfs_stat(const char *path, u32 *size_out, bool *dir_out) {
         return true;
     }
 
-    const builtin_file_t *b = builtin_at_path(abs);
-    if (b) {
-        if (size_out) *size_out = b->size;
-        if (dir_out)  *dir_out = false;
-        return true;
-    }
+    if (live_path(abs)) return sysfs_stat(abs, size_out, dir_out);
 
     if (fat_mounted()) return fat_stat(abs, size_out, dir_out);
 
@@ -220,12 +204,7 @@ int vfs_read(const char *path, void *buf, u32 cap) {
     char abs[VFS_PATH_MAX];
     if (!vfs_resolve(path, abs, sizeof(abs))) return -1;
 
-    const builtin_file_t *b = builtin_at_path(abs);
-    if (b) {
-        u32 n = b->size < cap ? b->size : cap;
-        memcpy(buf, b->data, n);
-        return (int)n;
-    }
+    if (live_path(abs)) return sysfs_read(abs, buf, cap);
 
     if (fat_mounted()) return fat_read_file(abs, (u8 *)buf, cap);
 
@@ -239,7 +218,7 @@ int vfs_read(const char *path, void *buf, u32 cap) {
 bool vfs_write(const char *path, const void *buf, u32 len) {
     char abs[VFS_PATH_MAX];
     if (!vfs_resolve(path, abs, sizeof(abs))) return false;
-    if (builtin_at_path(abs)) return false;          /* the kernel's copy is fixed */
+    if (live_path(abs)) return false;   /* generated, or the kernel's own copy */
 
     if (fat_mounted()) return fat_write_file(abs, (const u8 *)buf, len);
     return fs_write(abs, buf, len);
@@ -265,7 +244,7 @@ bool vfs_append(const char *path, const void *buf, u32 len) {
 bool vfs_delete(const char *path) {
     char abs[VFS_PATH_MAX];
     if (!vfs_resolve(path, abs, sizeof(abs))) return false;
-    if (builtin_at_path(abs)) return false;
+    if (live_path(abs)) return false;
 
     if (fat_mounted()) return fat_delete_file(abs);
     return fs_delete(abs);
@@ -275,6 +254,7 @@ bool vfs_mkdir(const char *path) {
     char abs[VFS_PATH_MAX];
     if (!vfs_resolve(path, abs, sizeof(abs))) return false;
     if (abs[0] == '/' && abs[1] == 0) return false;
+    if (live_path(abs)) return false;
 
     if (fat_mounted()) return fat_mkdir(abs);
     return fs_mkdir(abs);
@@ -284,6 +264,7 @@ bool vfs_rmdir(const char *path) {
     char abs[VFS_PATH_MAX];
     if (!vfs_resolve(path, abs, sizeof(abs))) return false;
     if (abs[0] == '/' && abs[1] == 0) return false;
+    if (live_path(abs)) return false;
     if (vfs_count(abs) > 0) return false;
 
     if (fat_mounted()) return fat_rmdir(abs);
@@ -334,8 +315,7 @@ static open_file_t open_files[VFS_MAX_OPEN];
 
 void vfs_init(void) {
     memset(open_files, 0, sizeof(open_files));
-    memset(builtins, 0, sizeof(builtins));
-    n_builtin = 0;
+    sysfs_init();
 }
 
 static u32 here_pid(void) {
@@ -373,7 +353,7 @@ int vfs_open(const char *path, u32 flags) {
     bool exists = vfs_stat(abs, &size, &is_dir);
     if (is_dir) return -1;
     if (!exists && !(flags & O_CREATE)) return -1;
-    if ((flags & O_WRITE) && builtin_at_path(abs)) return -1;
+    if ((flags & O_WRITE) && live_path(abs)) return -1;
 
     int fd = -1;
     for (int i = 0; i < VFS_MAX_OPEN; i++)
