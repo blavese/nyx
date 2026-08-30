@@ -26,13 +26,21 @@ ZIG="$ZIG" bash bootloader/build.sh
 
 SRC=$(find boot kernel -name '*.c' -o -name '*.S' | sort | tr '\n' ' ')
 
+# kernel/builtin.S pulls the user programs and the SMP trampoline in through
+# .incbin, and zig caches compiled objects without knowing that. Editing a
+# user program leaves builtin.S byte for byte identical, so the cache hits and
+# the kernel silently ships the copy from the previous build. Folding a
+# checksum of the blobs into the command line, which the cache key does cover,
+# is what makes a changed program actually reach the image.
+BLOBS=$(cat build/user/*.elf build/trampoline.bin | cksum | cut -d' ' -f1)
+
 "$ZIG" cc -target x86-freestanding-none -mcpu=i686 \
   -ffreestanding -nostdlib -static -O2 -std=gnu11 \
   -fno-sanitize=undefined -fno-stack-protector -fno-stack-check \
   -fno-builtin -fno-omit-frame-pointer \
   -mno-sse -mno-sse2 -mno-mmx -mno-80387 -mno-red-zone \
   -Wall -Wextra -Wno-unused-parameter \
-  -Iinclude \
+  -Iinclude -DNYX_BLOB_STAMP=$BLOBS \
   -Wl,-T,linker.ld -Wl,--build-id=none -Wl,-z,max-page-size=4096 \
   -o build/nyx.elf $SRC
 

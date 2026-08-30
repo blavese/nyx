@@ -18,6 +18,10 @@
 #include "net.h"
 #include "tcp.h"
 #include "heap.h"
+#include "smp.h"
+#include "pmm.h"
+#include "fb.h"
+#include "fat.h"
 
 /* User space is everything above the kernel's identity mapped region. */
 #define USER_MIN (KERNEL_SPACE_MB * 1024u * 1024u)
@@ -352,6 +356,28 @@ static i32 sys_win_close(registers_t *r) {
     return winsrv_close(caller_pid(), (int)r->ebx) ? 0 : -1;
 }
 
+static i32 sys_sysinfo(registers_t *r) {
+    if (!user_range_ok(r->ebx, sizeof(nyx_sysinfo_t))) return -1;
+
+    nyx_sysinfo_t info;
+    memset(&info, 0, sizeof(info));
+    info.cpus_found = smp_cpu_count();
+    info.cpus_started = smp_started();
+    info.mem_total_kb = pmm_total_frames() * 4;
+    info.mem_used_kb = pmm_used_frames() * 4;
+    info.mem_free_kb = pmm_free_frames() * 4;
+    info.heap_total_kb = heap_total() / 1024;
+    info.uptime_seconds = (u32)(timer_ticks() / timer_hz());
+    info.tasks = task_count();
+    info.screen_w = fb_active() ? fb_width() : 0;
+    info.screen_h = fb_active() ? fb_height() : 0;
+    info.syscalls = syscall_count();
+    info.disk_kb_free = fat_mounted() ? fat_free_bytes() / 1024 : 0;
+
+    memcpy((void *)r->ebx, &info, sizeof(info));
+    return 0;
+}
+
 static u32 served;
 u32 syscall_count(void) { return served; }
 
@@ -389,6 +415,7 @@ static const syscall_fn TABLE[] = {
     [SYS_DISCONNECT]  = sys_disconnect,
     [SYS_RESOLVE]     = sys_resolve,
     [SYS_NETINFO]     = sys_netinfo,
+    [SYS_SYSINFO]     = sys_sysinfo,
 };
 
 #define N_SYSCALLS (sizeof(TABLE) / sizeof(TABLE[0]))

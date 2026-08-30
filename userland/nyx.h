@@ -42,6 +42,7 @@ typedef int            i32;
 #define SYS_DISCONNECT  28
 #define SYS_RESOLVE     29
 #define SYS_NETINFO     30
+#define SYS_SYSINFO     31
 
 static inline int syscall(int n, int a, int b, int c) {
     int r;
@@ -238,6 +239,22 @@ static inline int resolve(const char *host, u32 *out) {
 }
 static inline int netinfo(nyx_netinfo *out) {
     return syscall(SYS_NETINFO, (int)out, 0, 0);
+}
+
+/* What the machine is, as far as a program is allowed to know. */
+typedef struct {
+    u32 cpus_found, cpus_started;
+    u32 mem_total_kb, mem_used_kb;
+    u32 heap_total_kb, mem_free_kb;
+    u32 uptime_seconds;
+    u32 tasks;
+    u32 screen_w, screen_h;
+    u32 syscalls;
+    u32 disk_kb_free;
+} nyx_sysinfo;
+
+static inline int sysinfo(nyx_sysinfo *out) {
+    return syscall(SYS_SYSINFO, (int)out, 0, 0);
 }
 
 /* --- windows -------------------------------------------------------------

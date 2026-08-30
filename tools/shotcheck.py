@@ -36,7 +36,9 @@ INDIGO = (0x6E, 0x8A, 0xE8)
 # Where things are on a 1024x768 screen with the default layout.
 BADGE = (40, 745)             # the taskbar launcher
 MENU_SETTINGS = (60, 615)     # third entry of the launcher menu
-SWATCH_INDIGO = (160, 160)    # second accent in the settings window
+# Settings opens as the second window, so its content starts at 89,98 and the
+# second accent swatch sits 70,74 into that.
+SWATCH_INDIGO = (175, 190)
 
 
 class Monitor:
