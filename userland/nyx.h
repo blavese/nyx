@@ -48,6 +48,10 @@ typedef long long          nyx_word;
 #define SYS_RESOLVE     29
 #define SYS_NETINFO     30
 #define SYS_SYSINFO     31
+#define SYS_SPAWN       32
+#define SYS_WAIT        33
+#define SYS_KILL        34
+#define SYS_TASKS       35
 
 /* The one door into the kernel. The registers are the same ones a 32-bit nyx
    used, only twice as wide, which is why every argument is a word rather than
@@ -62,6 +66,7 @@ static inline nyx_word syscall(nyx_word n, nyx_word a, nyx_word b, nyx_word c) {
 }
 
 static inline void exit(int code)        { syscall(SYS_EXIT, code, 0, 0); }
+
 static inline void putc(char ch)         { syscall(SYS_PUTC, ch, 0, 0); }
 static inline int  getpid(void)          { return syscall(SYS_GETPID, 0, 0, 0); }
 static inline int  ticks(void)           { return syscall(SYS_TICKS, 0, 0, 0); }
@@ -263,6 +268,47 @@ typedef struct {
 
 static inline int sysinfo(nyx_sysinfo *out) {
     return syscall(SYS_SYSINFO, (nyx_word)out, 0, 0);
+}
+
+/* --- other programs ------------------------------------------------------
+
+   spawn starts one and returns its pid; wait blocks until it finishes and
+   gives back what it returned from main. A program that is never waited for
+   still runs and still exits; its status is simply not collected. */
+
+#define TASK_READY    0
+#define TASK_RUNNING  1
+#define TASK_SLEEPING 2
+#define TASK_BLOCKED  3
+#define TASK_DEAD     4
+
+typedef struct {
+    u32  pid;
+    u32  state;
+    u32  slices;
+    u32  user;
+    char name[32];
+} nyx_task;
+
+static inline int spawn(const char *path) {
+    return syscall(SYS_SPAWN, (nyx_word)path, 0, 0);
+}
+static inline int wait_for(int pid) {
+    return syscall(SYS_WAIT, pid, 0, 0);
+}
+static inline int kill(int pid) {
+    return syscall(SYS_KILL, pid, 0, 0);
+}
+/* Returns 1 when an entry was produced, 0 past the end. */
+static inline int tasks(int index, nyx_task *out) {
+    return syscall(SYS_TASKS, index, (nyx_word)out, 0);
+}
+
+/* Starts a program and waits for it, which is what a shell wants. */
+static inline int run_program(const char *path) {
+    int pid = spawn(path);
+    if (pid < 0) return pid;
+    return wait_for(pid);
 }
 
 /* --- windows -------------------------------------------------------------

@@ -10,6 +10,7 @@
 #include "vfs.h"
 #include "timer.h"
 #include "sched.h"
+#include "wait.h"
 #include "syscall.h"
 #include "idt.h"
 #include "blockdev.h"
@@ -734,6 +735,80 @@ static void test_smp(void) {
     ok("the lock is free afterwards", true);
 }
 
+/* --- waiting --------------------------------------------------------------
+
+   The point of a wait queue is that a waiting task costs nothing. Proving it
+   works needs two things shown separately: that a blocked task really is
+   woken by somebody else, and that while it is blocked it is not being
+   scheduled at all. The second is what a spin loop would fail. */
+
+static volatile int waiter_state;   /* 0 not started, 1 blocked, 2 woken */
+static volatile u32 waiter_slices;
+static int wait_channel;
+
+static void waiter_task(void) {
+    waiter_state = 1;
+    wait_on(&wait_channel, 0);          /* no deadline: only a wake ends this */
+    task_t *me = task_current();
+    waiter_slices = me ? me->slices : 0;
+    waiter_state = 2;
+    task_exit_with(7);
+}
+
+static void test_waiting(void) {
+    waiter_state = 0;
+    waiter_slices = 0;
+
+    task_t *t = task_create("waiter", waiter_task);
+    ok("a task can be created to wait", t != 0);
+    if (!t) return;
+    u32 pid = t->pid;
+
+    /* Let it reach the wait. */
+    for (int i = 0; i < 50 && waiter_state == 0; i++) sleep_ms(10);
+    ok("it got as far as blocking", waiter_state == 1);
+    ok("and the scheduler knows it is blocked", task_blocked_count() >= 1);
+
+    /* While blocked it must not be running. A spin loop would climb here. */
+    u32 before = t->slices;
+    sleep_ms(150);
+    ok("a blocked task is not scheduled at all", t->slices == before);
+    ok("and it has not woken by itself", waiter_state == 1);
+
+    wake_all(&wait_channel);
+    for (int i = 0; i < 50 && waiter_state != 2; i++) sleep_ms(10);
+    ok("waking it lets it run again", waiter_state == 2);
+
+    /* And the status it exited with comes back to whoever asks. */
+    ok("its exit status is collected", task_wait(pid) == 7);
+    ok("waiting on a task that never existed says so", task_wait(999999) == -1);
+}
+
+static volatile int timeout_reached;
+
+static void timeout_task(void) {
+    /* Nothing ever wakes this address, so only the deadline can end it. */
+    static int never;
+    bool woken = wait_on(&never, 120);
+    timeout_reached = woken ? 1 : 2;
+    task_exit_with(0);
+}
+
+static void test_wait_timeout(void) {
+    timeout_reached = 0;
+    task_t *t = task_create("timeout", timeout_task);
+    if (!t) { ok("scratch task", false); return; }
+
+    u64 start = timer_ticks();
+    for (int i = 0; i < 100 && timeout_reached == 0; i++) sleep_ms(10);
+    u64 waited = timer_ticks() - start;
+
+    ok("a wait with a deadline comes back", timeout_reached != 0);
+    ok("and says it timed out rather than being woken", timeout_reached == 2);
+    ok("after about the time it was given", waited >= 10 && waited <= 60);
+    task_wait(t->pid);
+}
+
 int selftest_run(void) {
     passed = failed = 0;
     kprintf("\n=== nyx self test ===\n");
@@ -760,6 +835,8 @@ int selftest_run(void) {
     kprintf("[window server]\n"); test_winsrv();
     kprintf("[built-in programs]\n"); test_builtin();
     kprintf("[theme]\n");      test_theme();
+    kprintf("[waiting]\n");    test_waiting();
+    kprintf("[wait timeouts]\n"); test_wait_timeout();
     kprintf("[processors]\n"); test_smp();
     kprintf("\n%d passed, %d failed\n", passed, failed);
     kprintf(failed ? "SELFTEST_FAIL\n" : "SELFTEST_PASS\n");

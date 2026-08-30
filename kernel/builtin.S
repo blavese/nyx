@@ -46,6 +46,13 @@ builtin_term_start:
 builtin_term_end:
 
 .balign 4
+.global builtin_spawntest_start
+.global builtin_spawntest_end
+builtin_spawntest_start:
+.incbin "build/user/spawntest.elf"
+builtin_spawntest_end:
+
+.balign 4
 .global builtin_settings_start
 .global builtin_settings_end
 builtin_settings_start:

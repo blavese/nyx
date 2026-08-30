@@ -6,11 +6,14 @@
 #include "io.h"
 #include "serial.h"
 
+/* The buffer holds ints rather than chars, because a key is not always a
+   character: an arrow or a page key has no letter to stand for it. */
 #define BUFSZ 256
-static volatile char buf[BUFSZ];
+static volatile int buf[BUFSZ];
 static volatile u32 head = 0, tail = 0;
 
-static bool shift = false, caps = false, ctrl = false;
+static bool shift = false, caps = false, ctrl = false, alt = false;
+static bool extended = false;    /* the last byte was the 0xE0 prefix */
 
 static const char MAP[128] = {
     0,  27, '1','2','3','4','5','6','7','8','9','0','-','=','\b',
@@ -28,31 +31,97 @@ static const char MAP_SHIFT[128] = {
     0,  '*', 0, ' ',
 };
 
-static void push(char c) {
+static void push(int c) {
     u32 next = (head + 1) % BUFSZ;
     if (next != tail) { buf[head] = c; head = next; }
+}
+
+/* The scancodes that arrive behind a 0xE0 prefix. Everything here is a key
+   rather than a character, which is why they get their own numbers. */
+static int extended_key(u8 code) {
+    switch (code) {
+        case 0x48: return KEY_UP;
+        case 0x50: return KEY_DOWN;
+        case 0x4B: return KEY_LEFT;
+        case 0x4D: return KEY_RIGHT;
+        case 0x47: return KEY_HOME;
+        case 0x4F: return KEY_END;
+        case 0x49: return KEY_PAGE_UP;
+        case 0x51: return KEY_PAGE_DOWN;
+        case 0x53: return KEY_DELETE;
+        case 0x52: return KEY_INSERT;
+        default:   return -1;
+    }
+}
+
+/* The same keys again, for a keyboard with the numeric keypad's number lock
+   off, which sends them without the prefix. */
+static int keypad_key(u8 code) {
+    switch (code) {
+        case 0x48: return KEY_UP;
+        case 0x50: return KEY_DOWN;
+        case 0x4B: return KEY_LEFT;
+        case 0x4D: return KEY_RIGHT;
+        case 0x47: return KEY_HOME;
+        case 0x4F: return KEY_END;
+        case 0x49: return KEY_PAGE_UP;
+        case 0x51: return KEY_PAGE_DOWN;
+        case 0x53: return KEY_DELETE;
+        default:   return -1;
+    }
 }
 
 static void on_key(registers_t *r) {
     u8 sc = inb(0x60);
 
+    /* A prefix on its own. The byte after it is what was actually pressed. */
+    if (sc == 0xE0) { extended = true; return; }
+
     if (sc & 0x80) {                       /* key release */
         u8 code = sc & 0x7F;
-        if (code == 0x2A || code == 0x36) shift = false;
-        if (code == 0x1D) ctrl = false;
+        if (!extended) {
+            if (code == 0x2A || code == 0x36) shift = false;
+            if (code == 0x1D) ctrl = false;
+            if (code == 0x38) alt = false;
+        } else {
+            if (code == 0x1D) ctrl = false;   /* the right hand ones */
+            if (code == 0x38) alt = false;
+        }
+        extended = false;
+        return;
+    }
+
+    if (extended) {
+        extended = false;
+        if (sc == 0x1D) { ctrl = true; return; }
+        if (sc == 0x38) { alt = true; return; }
+        int k = extended_key(sc);
+        if (k >= 0) push(k);
         return;
     }
 
     switch (sc) {
         case 0x2A: case 0x36: shift = true; return;
         case 0x1D: ctrl = true; return;
+        case 0x38: alt = true; return;
         case 0x3A: caps = !caps; return;
         default: break;
     }
 
+    /* The function keys, which have no character either. */
+    if (sc >= 0x3B && sc <= 0x44) { push(KEY_F1 + (sc - 0x3B)); return; }
+    if (sc == 0x57) { push(KEY_F1 + 10); return; }
+    if (sc == 0x58) { push(KEY_F1 + 11); return; }
+
     if (sc >= 128) return;
     char c = shift ? MAP_SHIFT[sc] : MAP[sc];
-    if (!c) return;
+
+    /* A keypad with number lock off sends the navigation keys unprefixed. */
+    if (!c) {
+        int k = keypad_key(sc);
+        if (k >= 0) push(k);
+        return;
+    }
 
     if (caps && c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
     else if (caps && shift && c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
@@ -77,9 +146,12 @@ int kbd_trygetchar(void) {
         if (s >= 0) return s == 13 ? 10 : s;   /* CR becomes LF */
         return -1;
     }
-    char c = buf[tail];
+    int c = buf[tail];
     tail = (tail + 1) % BUFSZ;
-    return (u8)c;
+    /* A special key is already an int above 255; a character has to come
+       back unsigned or anything above 127 arrives negative and reads as
+       "nothing here". */
+    return KEY_IS_SPECIAL(c) ? c : (int)(u8)c;
 }
 
 char kbd_getchar(void) {

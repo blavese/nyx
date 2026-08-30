@@ -7,6 +7,7 @@
 #include "winsrv.h"
 #include "vfs.h"
 #include "syscall.h"
+#include "wait.h"
 #include "heap.h"
 #include "printf.h"
 #include "string.h"
@@ -16,6 +17,11 @@
 #include "paging.h"
 
 #define STACK_SIZE 16384u
+
+/* How long a finished task's record survives so its status can be collected.
+   Ten seconds is far longer than any wait here takes and short enough that
+   nothing accumulates. */
+#define REAP_GRACE (10u * 100u)      /* in ticks, at 100 Hz */
 
 static task_t *head;        /* circular list */
 static task_t *current;
@@ -111,19 +117,51 @@ task_t *task_create_user(const char *name, u64 dir, u64 entry, u64 stack_top) {
 task_t *task_current(void) { return current; }
 task_t *task_list(void)    { return head; }
 
-bool task_alive(u32 pid) {
-    if (!head) return false;
+task_t *task_by_pid(u32 pid) {
+    if (!head) return 0;
     task_t *p = head;
     do {
-        if (p->pid == pid) return p->state != TASK_DEAD;
+        if (p->pid == pid) return p;
         p = p->next;
     } while (p != head);
-    return false;      /* already reaped */
+    return 0;
 }
 
-/* Gives up the processor until the given task finishes. */
-void task_wait(u32 pid) {
-    while (task_alive(pid)) task_yield();
+bool task_alive(u32 pid) {
+    task_t *t = task_by_pid(pid);
+    return t && t->state != TASK_DEAD;
+}
+
+/* Blocks until the task finishes, then collects what it exited with.
+ *
+ * The task record is kept until somebody does this, because the status lives
+ * in it. Nothing is required to: a task nobody waits for is freed when it
+ * dies, and this returns -1 for it. */
+int task_wait(u32 pid) {
+    task_t *t = task_by_pid(pid);
+    if (!t) return -1;
+
+    /* Waiting on the record's own address, so task_exit_with can wake
+       exactly the waiters for this task and nobody else. */
+    while (t->state != TASK_DEAD) {
+        if (!wait_on(t, 1000)) {
+            /* Timed out. The task may have gone in the meantime, in which
+               case the record is no longer findable. */
+            if (!task_by_pid(pid)) return -1;
+        }
+    }
+
+    int status = t->exit_status;
+    t->reaped = true;
+    return status;
+}
+
+u32 task_blocked_count(void) {
+    if (!head) return 0;
+    u32 n = 0;
+    task_t *p = head;
+    do { if (p->state == TASK_BLOCKED) n++; p = p->next; } while (p != head);
+    return n;
 }
 
 u32 task_count(void) {
@@ -138,6 +176,18 @@ static task_t *pick_next(task_t *from) {
     u64 now = timer_ticks();
     for (u32 i = 0; i < 4096 && p; i++, p = p->next) {
         if (p->state == TASK_SLEEPING && now >= p->wake_at) p->state = TASK_READY;
+
+        /* A blocked task with a deadline gets released when it passes, so a
+           wakeup that never arrives is a slow operation rather than a hung
+           machine. One with no deadline waits for somebody to wake it. */
+        if (p->state == TASK_BLOCKED && p->wake_at && now >= p->wake_at) {
+            /* The channel is deliberately left set. Clearing it is what a
+               real wakeup does, so leaving it is how the waiter tells a
+               deadline apart from somebody actually calling wake. */
+            p->wake_at = 0;
+            p->state = TASK_READY;
+        }
+
         if (p->state == TASK_READY || p->state == TASK_RUNNING) return p;
     }
     return from;
@@ -175,7 +225,15 @@ u64 scheduler_switch(u64 rsp) {
         task_t *p = head;
         for (u32 i = 0; i < 4096; i++) {
             task_t *n = p->next;
-            if (n != p && n->state == TASK_DEAD && n != current && n != head) {
+            /* A dead task is kept a little while after it finishes, so
+               that whoever started it can still ask what it returned. It
+               goes as soon as the status is collected, and anyway once the
+               grace period is up, so a task nobody waits for is not a leak.
+               Freeing it immediately is how a wait comes back with nothing. */
+            bool expired = n->died_at && timer_ticks() > n->died_at + REAP_GRACE;
+            bool collectable = n->reaped || expired;
+            if (n != p && n->state == TASK_DEAD && collectable &&
+                n != current && n != head) {
                 p->next = n->next;
                 if (n->dir) paging_free_directory(n->dir);
                 kfree((void *)n->stack_base);
@@ -207,14 +265,22 @@ void task_sleep(u32 ms) {
     task_yield();
 }
 
-void task_exit(void) {
+void task_exit_with(int status) {
     /* Take back anything the task still holds. A graphical program that
        crashes must not leave its window on the desktop. */
     if (current) {
         winsrv_release(current->pid);
         vfs_release(current->pid);
         syscall_release(current->pid);
+
+        current->exit_status = status;
+        current->died_at = timer_ticks();
+        current->state = TASK_DEAD;
+
+        /* Anyone waiting on this task is waiting on its record. */
+        wake_all(current);
     }
-    if (current) current->state = TASK_DEAD;
     for (;;) task_yield();
 }
+
+void task_exit(void) { task_exit_with(0); }
