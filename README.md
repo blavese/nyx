@@ -1,10 +1,10 @@
 # nyx
 
-A small operating system written from scratch for 32-bit x86. It boots itself
-off a disc or a USB stick, drives a framebuffer, manages its own memory,
-preempts its own tasks, starts the machine's other processors, keeps files in
-directories on a FAT16 disk, talks to the internet, and runs a desktop whose
-programs are real ring 3 processes.
+A 64-bit operating system written from scratch for x86. It boots itself off a
+disc or a USB stick, through BIOS or UEFI, drives a framebuffer, manages its
+own memory, preempts its own tasks, starts the machine's other processors,
+keeps files in directories on a FAT16 disk, talks to the internet, and runs a
+desktop whose programs are real ring 3 processes.
 
 ![the nyx desktop](docs/desktop.png)
 
@@ -62,25 +62,45 @@ saves it to a disk that survives closing the window.
 ## running it on a real machine
 
 Download **nyx.iso**, write it to a USB stick or burn it to a disc, and boot
-from it. The same file works both ways: a BIOS booting from a disc reads the
-El Torito record, one booting from a stick reads the partition table, and both
-end up in the same bootloader.
+from it. One file, four ways in, and it picks the right one itself:
 
-That bootloader is `bootloader/cdboot.S` and it is ours. Nothing else is
-involved: no GRUB, no syslinux, no isohybrid. It turns on the A20 gate, asks
-the firmware what memory exists, reads the kernel off the boot device and
-copies it above 1 MiB through unreal mode, then hands over the way a multiboot
-loader is supposed to.
+| | from a disc | from a USB stick |
+|---|---|---|
+| **BIOS** | El Torito, first catalog entry | the MBR at the front of the image |
+| **UEFI** | El Torito, second entry, platform 0xEF | the partition marked as an ESP |
+
+Both bootloaders are ours. Nothing else is involved: no GRUB, no syslinux, no
+isohybrid, and the image is written by `tools/mkiso.py` rather than by
+xorriso. The EFI system partition inside it is a FAT16 filesystem built by
+`tools/mkfat.py`, not by mtools.
 
 It runs entirely from the disc and writes nothing unless there is a hard disk
 attached, in which case it will use it. **Be careful with that on a machine
 whose disk you care about**: a blank or unformatted one gets formatted on
 first boot.
 
+### what to expect on a laptop made this decade
+
+It will boot and you will get a screen: UEFI hands over a framebuffer and the
+desktop draws on it at whatever resolution the firmware picked.
+
+Whether you can then *use* it depends on the machine, and this is the honest
+boundary. Input goes through a PS/2 keyboard and mouse. Many laptops still
+emulate PS/2 for their built-in keyboard and many do not, and none of them
+emulate it for something plugged into a USB port; a USB keyboard needs a USB
+stack, which is xHCI plus HID and is a large piece of work that is not here.
+Storage is the same story: nyx speaks AHCI and ATA, so it will find a SATA
+disk, and it will not find an NVMe one, which is what most recent laptops
+have. Without a disk it still runs, with an in-memory filesystem that does
+not survive a reboot.
+
+So: it boots and draws on a modern machine. It is fully usable on one with a
+PS/2-emulating keyboard and a SATA disk, and on any virtual machine.
+
 ## running it from source
 
 You need QEMU and Zig. Zig is used only as a cross compiler, so there is no
-i686-elf toolchain to build first.
+x86_64-elf toolchain to build first.
 
     ./run.sh          boot in a window
     ./run.sh -t       boot headless, console on stdout
@@ -91,6 +111,12 @@ i686-elf toolchain to build first.
 `run.sh` creates a disk image and attaches a network card automatically. The
 first three hand the kernel to QEMU with `-kernel`, which means QEMU is doing
 the bootloader's job; `-i` is the one that does not.
+
+The kernel handed to `-kernel` is `build/nyx.bin` rather than the ELF, and
+that is not a detail: no multiboot loader will accept a 64-bit ELF, because
+multiboot predates long mode. The multiboot header carries the a.out kludge,
+which tells a loader to stop reading ELF headers and copy the flat image
+instead.
 
     python tools/mkiso.py       write build/nyx.iso
     bash tools/iso_test.sh      boot it as a disc and as a stick
@@ -104,15 +130,39 @@ It embeds `build/nyx.elf` and a starter disk, so build the kernel and run
 
 ## what it actually does
 
-**Boot.** A multiboot header gets it loaded at 1 MiB in 32-bit protected mode.
-`bootloader/cdboot.S` is what puts it there on a real machine: the BIOS drops
-it at 0x7C00 in 16-bit real mode, and it opens the A20 gate, asks the firmware
-for the memory map, reads the kernel off the boot device in 32 KiB chunks and
-copies each one above 1 MiB through unreal mode, which is the only way to
-write there without giving up the BIOS calls it still needs. It handles both
-sector sizes, because a disc reports 2048 bytes and a stick reports 512, and
-INT 13h counts in whatever the device uses.
-The bootloader's memory map is read to find out how much RAM exists.
+**Boot.** Three ways in, all agreeing on one structure.
+
+`bootloader/cdboot.S` is the BIOS one: the firmware drops it at 0x7C00 in
+16-bit real mode and it opens the A20 gate, asks for the memory map, reads the
+kernel off the boot device in 32 KiB chunks and copies each above 1 MiB
+through unreal mode, which is the only way to write there without giving up
+the BIOS calls it still needs. It handles both sector sizes, because a disc
+reports 2048 bytes and a stick reports 512.
+
+`uefi/loader.c` is the other. A UEFI machine never enters real mode and never
+runs a boot sector, so none of that applies: it is an EFI application, a PE
+executable the firmware loads and calls. The interface is transcribed from the
+UEFI specification in `uefi/efi.h` rather than taken from gnu-efi. It locates
+the graphics protocol and picks a mode, takes the ACPI pointer from the
+configuration table, reads the kernel off the volume it booted from, and calls
+ExitBootServices in the documented loop, because asking for the memory map
+allocates, allocating changes the map, and that invalidates the key the call
+wants.
+
+Both build the same `handoff_t`, so the kernel has one entry contract and
+never finds out which one started it. Multiboot could not have been that
+contract: it cannot describe a framebuffer the firmware chose, has no room for
+an ACPI pointer, and is 32-bit.
+
+**Long mode.** `boot/boot.S` gets there from 32-bit protected mode, and the
+order is fixed by the processor rather than by preference: long mode cannot be
+entered without paging already on, and paging in long mode needs four levels
+of tables that have to exist first. So it builds tables identity mapping the
+first 4 GiB with 2 MiB pages, turns on PAE, asks for long mode, turns on
+paging, and only then jumps through a 64-bit descriptor. It refuses to
+continue on a processor without long mode rather than faulting somewhere less
+explicable a few instructions later. The UEFI path skips all of this: the
+firmware is already there.
 
 **Descriptor tables.** A flat GDT (kernel and user code/data) plus a TSS, which
 is how an interrupt taken in ring 3 finds a kernel stack to switch to. A 256-entry IDT with
@@ -267,7 +317,7 @@ so the host gets a real exit status.
 
 The processor section is two checks on a machine with one CPU and eleven on
 a machine with several, where it hands work to each of them and requires the
-count they share to come back exact. `qemu-system-i386 -smp 4` reaches 183.
+count they share to come back exact. `qemu-system-x86_64 -smp 4` reaches 183.
 
 The tests are written to fail for the right reasons. The disk test writes a
 pattern to a spare sector, reads it back, and restores the original. The FAT
@@ -280,6 +330,10 @@ page into the same page table and requires the kernel one to stay out of reach,
 because that is the distinction a system call has to make about a pointer it is
 handed. The userspace test watches the system call counter rather than the task
 list, because a program can finish before a count is taken.
+
+`tools/iso_test.sh` is the fourth, and the only one that does not use QEMU's
+`-kernel`. It builds the image and boots it all four ways a real machine
+might, typing at the shell each time rather than trusting the banner.
 
 `tools/shell_test.sh` is the second half. It boots the OS, types commands at
 the shell over the serial line, and checks what comes back, including running a
@@ -359,12 +413,17 @@ large range:
   not forward ICMP to the wider internet without elevated privileges, so
   pinging an outside address times out even though DNS and TCP to that same
   address work.
-- **BIOS only.** The bootloader is 16-bit real mode code that a UEFI machine
-  will only run through its compatibility support module, and newer firmware
-  has stopped shipping one. If a virtual machine refuses the image, its
-  firmware setting is the first thing to check.
-- **32-bit only.** No long mode, so no more than 4 GiB of address space, and
-  the whole thing would have to be ported to reach it.
+- **No USB.** Input is a PS/2 keyboard and mouse. A laptop that does not
+  emulate PS/2 for its built-in keyboard has no keyboard here, and nothing
+  plugged into a USB port works at all. A USB stack is xHCI plus HID and is
+  the largest single thing missing.
+- **No NVMe.** Storage is AHCI and ATA, which covers SATA disks and every
+  virtual machine, and does not cover what most recent laptops have. Without
+  a disk it runs from memory and nothing survives a reboot.
+- **The address space is capped at 64 MiB.** The page tables and the frame
+  bitmap both have to describe whatever the kernel claims, and nothing yet
+  needs more. Long mode removed the 4 GiB ceiling; this one is self-imposed
+  and it is a constant.
 
 It is a real kernel in that it boots itself on a bare machine, drives its own
 hardware, and can fetch a file from a real server and keep it on a real disk.
@@ -410,7 +469,9 @@ orders of magnitude away from Linux, which is roughly 30 million lines.
     kernel/vfs.c       one namespace over the built-ins, the disk and memory
     kernel/acpi.c      reading the firmware tables to find the processors
     kernel/smp.c       starting them and handing them work
-    bootloader/        our own bootloader, and where a second cpu starts
+    bootloader/        the BIOS bootloader, and where a second cpu starts
+    uefi/              the UEFI bootloader, and the firmware interface
+                       it is written against
     kernel/gfx.c       drawing into off-screen surfaces
     kernel/vga.c       text console
     kernel/serial.c    16550 uart, interrupt driven
@@ -422,8 +483,9 @@ orders of magnitude away from Linux, which is roughly 30 million lines.
     kernel/divide.c    64-bit division helpers libgcc would normally provide
     userland/          programs, built separately from the kernel:
                        a terminal, paint, settings and three small tests
-    tools/             build checks, the font generator, the FAT reader,
-                       the image writer and the three test harnesses
+    tools/             build checks, the font generator, a FAT reader and
+                       a FAT writer, the image builder, and the four test
+                       harnesses
     launcher/          the Windows launcher (C#/WPF)
 
 ## license
