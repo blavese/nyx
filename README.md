@@ -8,17 +8,16 @@ programs are real ring 3 processes.
 
 ![the nyx desktop](docs/desktop.png)
 
-It is not a clone of anything. About 11,900 lines of C and assembly, no libc,
+It is not a clone of anything. About 12,300 lines of C and assembly, no libc,
 no runtime dependencies, and nothing borrowed from another kernel: every
-driver, the filesystem, the bootloader and the image writer are written here
-from the specifications.
+driver, the filesystem, the bootloader, the image writer and the font are
+written here, from the specifications where there is one and from scratch
+where there is not.
 
-Two honest exceptions, since "from scratch" invites the question. The bitmap
-font is traced from a system typeface by `tools/genfont.py` rather than drawn
-by hand, so the glyph shapes are Consolas'. And `nyx.exe`, the Windows
-launcher, is a C# program that bundles the .NET runtime, which is most of its
-162 MB; the kernel inside it is about 700 KB. Nothing third party runs on the
-machine nyx boots.
+The one exception, since "from scratch" invites the question: `nyx.exe`, the
+Windows launcher, is a C# program that bundles the .NET runtime, which is
+most of its 162 MB. The kernel inside it is about 700 KB. Nothing third party
+runs on the machine nyx boots.
 
 ## running it on Windows
 
@@ -170,6 +169,14 @@ ICMP (it answers pings and sends them), UDP, a DHCP client, a DNS resolver, and
 a single-connection TCP client with a three way handshake, orderly close, and
 retransmission with exponential backoff. `fetch` uses all of it to do an
 HTTP GET.
+
+**The font.** Ninety-five glyphs on an 8 by 16 cell, drawn by hand in
+`tools/genfont.py` as pictures made of dots and hashes, which is also how they
+are edited. It used to be traced from a system typeface, which made the shapes
+somebody else's and put an imaging library in the way of building a font.
+Capitals are nine rows, x-height is six, stems are one pixel, and the whole
+thing is emitted twice: once as a C array for the kernel and once as a header,
+because ring 3 cannot link against the kernel's copy.
 
 **Graphics.** Mode setting through the Bochs VBE dispatch ports rather than a
 BIOS call, so it works from protected mode with no real mode trampoline and no
@@ -389,7 +396,7 @@ orders of magnitude away from Linux, which is roughly 30 million lines.
     kernel/http.c      http get
     kernel/fb.c        linear framebuffer via the bochs vbe ports
     kernel/fbcon.c     the text console drawn into it
-    kernel/font.c      8x16 bitmap font (generated)
+    kernel/font.c      the 8x16 font (generated from the drawings)
     kernel/mouse.c     ps/2 mouse and the drawn pointer
     kernel/fat.c       fat16
     kernel/elf.c       elf32 loader
