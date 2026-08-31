@@ -10,6 +10,10 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# Taken from the one place that defines it, so a version bump does not
+# quietly turn these checks into ones that can never pass.
+VERSION=$(grep KERNEL_VERSION include/types.h | cut -d'"' -f2)
+
 QEMU="${QEMU:-}"
 [ -z "$QEMU" ] && QEMU=$(command -v qemu-system-x86_64 || true)
 [ -z "$QEMU" ] && QEMU="/c/Program Files/qemu/qemu-system-x86_64.exe"
@@ -89,7 +93,7 @@ check() {
 }
 
 echo "=== shell test ==="
-check "nyx 0.7.0 x86_64"           "uname reports the kernel"
+check "nyx $VERSION x86_64"        "uname reports the kernel"
 check "notes"                    "ls shows the seeded files"
 check "written from scratch"     "cat prints file contents"
 check "shell wrote this"         "write then cat round trips"
