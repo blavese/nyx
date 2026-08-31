@@ -279,74 +279,149 @@ die:
 /* The A20 gate starts closed on a PC for compatibility with software from
    1982. Try the fast path through the system control port first, then the
    keyboard controller, which is what older machines need. */
-enable_a20:
-    inb     $0x92, %al
-    testb   $0x02, %al
-    jnz     2f
-    orb     $0x02, %al
-    andb    $0xFE, %al           /* bit 0 would reset the machine */
-    outb    %al, $0x92
-2:
-    /* Confirm it took: 0x0000:0x0500 and 0xFFFF:0x0510 are the same byte
-       only while A20 is off. */
+/* Opening the A20 gate, and refusing to go on without it.
+ *
+ * With the gate shut, every address above 1 MiB wraps back to zero. The next
+ * thing this loader does is copy the kernel to 1 MiB, so a shut gate means
+ * copying it over the interrupt table and the firmware's own data instead.
+ * The machine does not survive that, and what it looks like from outside is a
+ * triple fault with nothing on screen to explain it.
+ *
+ * So there are four ways to open it, each one tested rather than assumed, and
+ * a refusal to continue if none of them worked. The previous version tried
+ * two and checked after the first, which is the same as not checking. */
+
+/* 1 in AX when the gate is open, 0 when addresses still wrap. Compares a byte
+   at 0x0000:0x0500 with the one 1 MiB above it at 0xFFFF:0x0510, and puts
+   both back afterwards. */
+a20_test:
     pushw   %ds
     pushw   %es
+    pushw   %bx
+    pushw   %si
+    pushw   %di
+
     xorw    %ax, %ax
     movw    %ax, %ds
     movw    $0xFFFF, %ax
     movw    %ax, %es
     movw    $0x0500, %si
     movw    $0x0510, %di
+
     movb    (%si), %al
     pushw   %ax
     movb    %es:(%di), %al
     pushw   %ax
+
     movb    $0x00, (%si)
     movb    $0xFF, %es:(%di)
     movb    (%si), %al
     cmpb    $0xFF, %al           /* still equal means the address wrapped */
+
+    /* Put the two bytes back. None of this disturbs the flags. */
     popw    %bx
     movb    %bl, %es:(%di)
     popw    %bx
     movb    %bl, (%si)
+
+    movw    $1, %ax
+    jne     1f
+    xorw    %ax, %ax
+1:  popw    %di
+    popw    %si
+    popw    %bx
     popw    %es
     popw    %ds
-    jne     a20_ok
+    ret
 
-    /* Fall back to the keyboard controller. */
+/* The keyboard controller, which is where the gate lived before there was a
+   faster way. The waits are bounded: a controller that never answers should
+   cost a moment and a fallback, not the whole machine. */
+kbc_a20:
+    pushw   %ax
+    pushw   %cx
+
     call    kbc_wait_in
-    movb    $0xAD, %al
+    movb    $0xAD, %al           /* disable the keyboard while we work */
     outb    %al, $0x64
+
     call    kbc_wait_in
-    movb    $0xD0, %al
+    movb    $0xD0, %al           /* read the output port */
     outb    %al, $0x64
     call    kbc_wait_out
     inb     $0x60, %al
     pushw   %ax
+
     call    kbc_wait_in
-    movb    $0xD1, %al
+    movb    $0xD1, %al           /* write it back with the gate bit set */
     outb    %al, $0x64
     call    kbc_wait_in
     popw    %ax
     orb     $0x02, %al
     outb    %al, $0x60
+
     call    kbc_wait_in
-    movb    $0xAE, %al
+    movb    $0xAE, %al           /* and enable the keyboard again */
     outb    %al, $0x64
     call    kbc_wait_in
-a20_ok:
+
+    popw    %cx
+    popw    %ax
     ret
 
 kbc_wait_in:
-    inb     $0x64, %al
+    pushw   %cx
+    movw    $0xFFFF, %cx
+1:  inb     $0x64, %al
     testb   $0x02, %al
-    jnz     kbc_wait_in
+    jz      2f
+    loop    1b
+2:  popw    %cx
     ret
 
 kbc_wait_out:
-    inb     $0x64, %al
+    pushw   %cx
+    movw    $0xFFFF, %cx
+1:  inb     $0x64, %al
     testb   $0x01, %al
-    jz      kbc_wait_out
+    jnz     2f
+    loop    1b
+2:  popw    %cx
+    ret
+
+enable_a20:
+    call    a20_test
+    testw   %ax, %ax
+    jnz     a20_done             /* the firmware already opened it */
+
+    /* Ask the firmware, which is the one allowed to be clever about how. */
+    movw    $0x2401, %ax
+    int     $0x15
+    call    a20_test
+    testw   %ax, %ax
+    jnz     a20_done
+
+    /* The fast gate on the system control port. */
+    inb     $0x92, %al
+    testb   $0x02, %al
+    jnz     1f
+    orb     $0x02, %al
+    andb    $0xFE, %al           /* bit 0 would reset the machine */
+    outb    %al, $0x92
+1:  call    a20_test
+    testw   %ax, %ax
+    jnz     a20_done
+
+    call    kbc_a20
+    call    a20_test
+    testw   %ax, %ax
+    jnz     a20_done
+
+    /* Going on from here would copy the kernel over the interrupt table. */
+    movw    $msg_a20fail, %si
+    jmp     die
+
+a20_done:
     ret
 
 /* A CD reports 2048 byte sectors and a USB stick reports 512, and INT 13h
@@ -658,6 +733,7 @@ msg_go:       .asciz "starting kernel\r\n"
 msg_halt:     .asciz "\r\nhalted.\r\n"
 msg_nomem:    .asciz "the firmware would not describe memory"
 msg_readfail: .asciz "could not read the boot device"
+msg_a20fail:  .asciz "the a20 gate will not open"
 
 /* Sits past the 512 bytes firmware is obliged to load, so stage one finding
    it is proof the whole file arrived rather than just the first sector. Its
