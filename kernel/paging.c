@@ -88,12 +88,24 @@ bool map_page_in(u64 pml4_phys, u64 virt, u64 phys, u64 flags) {
     return map_in((u64 *)pml4_phys, virt, phys, flags);
 }
 
-void unmap_page(u64 virt) {
-    u64 *pt = table_for(current_pml4, virt, false, 0);
+/* Removes a mapping from a named address space.
+ *
+ * Taking the directory rather than assuming the live one is what lets the
+ * window manager replace a surface belonging to a program that is not the
+ * one currently running. The flush is only meaningful when that space is
+ * the live one, which is why it is conditional: invalidating an address in
+ * a space that is not loaded does nothing, and doing it anyway on a space
+ * that is loaded is required. */
+void unmap_page_in(u64 pml4_phys, u64 virt) {
+    if (!pml4_phys) return;
+    u64 *pt = table_for((u64 *)pml4_phys, virt, false, 0);
     if (!pt) return;
     pt[index_of(virt, 1)] = 0;
-    __asm__ volatile ("invlpg (%0)" :: "r"(virt) : "memory");
+    if (pml4_phys == (u64)current_pml4)
+        __asm__ volatile ("invlpg (%0)" :: "r"(virt) : "memory");
 }
+
+void unmap_page(u64 virt) { unmap_page_in((u64)current_pml4, virt); }
 
 /* How many top-level entries the kernel's own mappings occupy. Each covers
    512 GiB, so in practice this is one, and sharing it shares everything the

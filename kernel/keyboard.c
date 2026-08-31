@@ -33,6 +33,12 @@ static const char MAP_SHIFT[128] = {
 
 static void push(int c) {
     u32 next = (head + 1) % BUFSZ;
+    /* Stamped with what was held down now, because that is the only moment
+       it is known. Whoever reads this may do so long afterwards. */
+    if (alt)   c |= KEY_MOD_ALT;
+    if (ctrl)  c |= KEY_MOD_CTRL;
+    if (shift) c |= KEY_MOD_SHIFT;
+
     if (next != tail) { buf[head] = c; head = next; }
 }
 
@@ -137,6 +143,10 @@ void keyboard_init(void) {
 
 bool kbd_has_char(void) { return head != tail; }
 
+bool kbd_alt(void)   { return alt; }
+bool kbd_ctrl(void)  { return ctrl; }
+bool kbd_shift(void) { return shift; }
+
 int kbd_trygetchar(void) {
     if (head == tail) {
         /* Also accept input from the serial line, which is how the
@@ -148,16 +158,19 @@ int kbd_trygetchar(void) {
     }
     int c = buf[tail];
     tail = (tail + 1) % BUFSZ;
+
     /* A special key is already an int above 255; a character has to come
        back unsigned or anything above 127 arrives negative and reads as
-       "nothing here". */
-    return KEY_IS_SPECIAL(c) ? c : (int)(u8)c;
+       "nothing here". Either way the modifier bits ride along on top. */
+    int mods = c & KEY_MODS;
+    int code = KEY_CODE(c);
+    return mods | (KEY_IS_SPECIAL(code) ? code : (int)(u8)code);
 }
 
 char kbd_getchar(void) {
     for (;;) {
         int c = kbd_trygetchar();
-        if (c >= 0) return (char)c;
+        if (c >= 0) return (char)KEY_CODE(c);
         __asm__ volatile ("hlt");
     }
 }

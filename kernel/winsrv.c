@@ -21,6 +21,7 @@
 #include "sched.h"
 #include "string.h"
 #include "printf.h"
+#include "io.h"
 
 typedef struct {
     bool      used;
@@ -35,9 +36,38 @@ typedef struct {
 
 static slot_t slots[WINSRV_MAX];
 
+/* Surfaces that have been swapped out and are waiting to be freed.
+ *
+ * The swap happens in the owning program's context, and the window manager
+ * runs in another task that may be part way through compositing the very
+ * buffer being replaced. Freeing it there and then would pull it out from
+ * under that read, so it is parked here and released by the manager itself
+ * at the top of a frame, where it is holding no pointer into one. */
+#define RETIRED_MAX 8
+static u32 *retired[RETIRED_MAX];
+
+static void retire(u32 *raw) {
+    if (!raw) return;
+    for (int i = 0; i < RETIRED_MAX; i++)
+        if (!retired[i]) { retired[i] = raw; return; }
+    /* Nowhere to park it. Freeing now risks a torn read of one frame;
+       leaking would be worse, and eight outstanding is already far more
+       than a single resize can produce. */
+    kfree(raw);
+}
+
+void winsrv_reap_retired(void) {
+    for (int i = 0; i < RETIRED_MAX; i++)
+        if (retired[i]) { kfree(retired[i]); retired[i] = 0; }
+}
+
 void winsrv_init(void) {
     memset(slots, 0, sizeof(slots));
+    memset(retired, 0, sizeof(retired));
 }
+
+/* Defined below, but every door into the server calls it first. */
+static void apply_pending(slot_t *s);
 
 static slot_t *lookup(u32 pid, int handle) {
     if (handle < 0 || handle >= WINSRV_MAX) return 0;
@@ -55,12 +85,14 @@ static void on_wm_close(window_t *w) {
 
 static void free_slot(slot_t *s) {
     if (s->user_addr && s->dir) {
-        for (u64 off = 0; off < s->bytes; off += PAGE_SIZE) {
-            /* Only unmap where the directory is still the live one; a task
-               that has already exited had its whole space torn down. */
-            if (paging_current_directory() == s->dir)
-                unmap_page(s->user_addr + off);
-        }
+        /* Named rather than assumed to be the live one. A program killed by
+           something else has its windows released from the killer's context,
+           and leaving those pages mapped while freeing them would point a
+           task at memory that had been handed back. The address space itself
+           is still there either way: it is freed when the task is reaped,
+           which is always after this. */
+        for (u64 off = 0; off < s->bytes; off += PAGE_SIZE)
+            unmap_page_in(s->dir, s->user_addr + off);
     }
     if (s->win) { s->win->on_close = 0; wm_close(s->win); }
     if (s->raw) kfree(s->raw);
@@ -115,6 +147,7 @@ int winsrv_create(u32 pid, const char *title, int cw, int ch) {
 u64 winsrv_surface(u32 pid, int handle, u64 dir) {
     slot_t *s = lookup(pid, handle);
     if (!s) return 0;
+    apply_pending(s);
     if (s->user_addr) return s->user_addr;
 
     u64 base = WINSRV_SURFACE_BASE + (u64)handle * WINSRV_SURFACE_STEP;
@@ -134,12 +167,14 @@ u64 winsrv_surface(u32 pid, int handle, u64 dir) {
 int winsrv_size(u32 pid, int handle) {
     slot_t *s = lookup(pid, handle);
     if (!s || !s->win) return -1;
+    apply_pending(s);
     return (s->win->cw << 16) | (s->win->ch & 0xFFFF);
 }
 
 bool winsrv_poll(u32 pid, int handle, wm_event_t *out) {
     slot_t *s = lookup(pid, handle);
     if (!s) return false;
+    apply_pending(s);
     if (!s->win) {
         /* The window is gone but the program has not noticed yet. */
         out->type = WM_EV_CLOSE;
@@ -150,9 +185,121 @@ bool winsrv_poll(u32 pid, int handle, wm_event_t *out) {
     return wm_pop_event(s->win, out);
 }
 
+/* Swaps a window's pixels for a new block of a different size.
+ *
+ * The mapping has to end up at the same user address, because the program
+ * was given that address once and has no reason to ask again. So the old
+ * pages are unmapped from under it and the new ones put in their place,
+ * which is only safe because nothing else can run in that address space
+ * while this is happening. */
+static bool resize_slot(slot_t *s, int cw, int ch) {
+    if (cw < 32 || ch < 32 || cw > 1600 || ch > 1200) return false;
+    if (!s->win) return false;
+    if (s->win->cw == cw && s->win->ch == ch) return true;
+
+    /* This must be the owning program's own address space, because the
+       mapping is about to be pulled apart and rebuilt underneath it. Called
+       from anywhere else it would be doing that to a program that might be
+       part way through a draw. */
+    if (s->dir && paging_current_directory() != s->dir) return false;
+
+    u64 bytes = ((u64)((u64)cw * (u64)ch) * 4 + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    if (bytes > WINSRV_SURFACE_STEP) return false;   /* would reach the next window */
+
+    u32 *raw = (u32 *)kmalloc(bytes + PAGE_SIZE);
+    if (!raw) return false;
+    u32 *pixels = (u32 *)(((u64)raw + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
+    memset(pixels, 0, bytes);
+
+    /* Remap in the owner's address space, which is almost never the live
+       one: the resize is usually the window manager acting on a window
+       belonging to a program that is not currently running. That is why
+       every page here names its directory rather than assuming it.
+       Dropping the bookkeeping and freeing the old pages instead would
+       leave that program mapped to memory that had been handed back. */
+    if (s->user_addr && s->dir) {
+        for (u64 off = 0; off < s->bytes; off += PAGE_SIZE)
+            unmap_page_in(s->dir, s->user_addr + off);
+
+        for (u64 off = 0; off < bytes; off += PAGE_SIZE) {
+            if (map_page_in(s->dir, s->user_addr + off, (u64)pixels + off,
+                            PTE_PRESENT | PTE_RW | PTE_USER)) continue;
+            /* Out of frames partway through. Put the old pages back rather
+               than leaving the program with half a surface. */
+            for (u64 back = 0; back < off; back += PAGE_SIZE)
+                unmap_page_in(s->dir, s->user_addr + back);
+            for (u64 old = 0; old < s->bytes; old += PAGE_SIZE)
+                map_page_in(s->dir, s->user_addr + old, (u64)s->pixels + old,
+                            PTE_PRESENT | PTE_RW | PTE_USER);
+            kfree(raw);
+            return false;
+        }
+    }
+
+    retire(s->raw);          /* not freed here: the manager may be reading it */
+    s->raw = raw;
+    s->pixels = pixels;
+    s->bytes = bytes;
+
+    /* The three fields the compositor reads together, changed together, so
+       it cannot catch a new surface paired with the old dimensions and read
+       past the end of it. */
+    bool were_on = interrupts_enabled();
+    cli();
+    s->win->canvas = pixels;
+    s->win->cw = cw;
+    s->win->ch = ch;
+    s->win->want_cw = 0;
+    s->win->want_ch = 0;
+    if (were_on) sti();
+
+    s->win->dirty = true;
+    wm_invalidate(s->win);
+    return true;
+}
+
+/* Takes up a size the desktop asked for, if one is waiting. Every way into
+   the server goes through here first, so the swap always happens on a call
+   the program made rather than at a moment chosen for it. */
+static void apply_pending(slot_t *s) {
+    if (!s->win || !s->win->want_cw || !s->win->want_ch) return;
+    int cw = s->win->want_cw, ch = s->win->want_ch;
+    s->win->want_cw = s->win->want_ch = 0;
+    resize_slot(s, cw, ch);
+}
+
+bool winsrv_resize(u32 pid, int handle, int cw, int ch) {
+    slot_t *s = lookup(pid, handle);
+    return s ? resize_slot(s, cw, ch) : false;   /* the owner is asking */
+}
+
+bool winsrv_allow_resize(u32 pid, int handle) {
+    slot_t *s = lookup(pid, handle);
+    if (!s || !s->win) return false;
+    s->win->resizable = true;
+    return true;
+}
+
+/* What the window manager calls when it is the one doing the resizing.
+   It only writes down the size and tells the program; the surface is left
+   exactly as it is until the program next calls in. */
+bool winsrv_resize_window(window_t *w, int cw, int ch) {
+    if (!w) return false;
+    if (cw < 32 || ch < 32 || cw > 1600 || ch > 1200) return false;
+    if (w->cw == cw && w->ch == ch) return true;
+
+    w->want_cw = cw;
+    w->want_ch = ch;
+
+    wm_event_t ev = { WM_EV_RESIZE, cw, ch, 0, 0 };
+    wm_push_event(w, &ev);
+    return true;
+}
+
 bool winsrv_commit(u32 pid, int handle) {
     slot_t *s = lookup(pid, handle);
     if (!s || !s->win) return false;
+    apply_pending(s);
     wm_invalidate(s->win);
     return true;
 }

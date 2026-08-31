@@ -1441,6 +1441,16 @@ __attribute__((section(".text._start"))) void _start(void) {
     exit(main());
 }
 
+/* Works out how much text the window holds now. Called at startup and
+   again every time the desktop hands over a different size. */
+static void fit_to_window(void) {
+    cols = (scr.w - PAD * 2) / FONT_W;
+    rows = (scr.h - PAD * 2) / FONT_H;
+    if (cols > COLS) cols = COLS;
+    if (cols < 8) cols = 8;
+    if (rows < 2) rows = 2;
+}
+
 int main(void) {
     win = win_create("terminal", 760, 480);
     if (win < 0) { puts("term: no window\n"); return 1; }
@@ -1451,9 +1461,12 @@ int main(void) {
     scr.h = win_height(win);
     if (scr.w <= 0 || scr.h <= 0) return 1;
 
-    cols = (scr.w - PAD * 2) / FONT_W;
-    rows = (scr.h - PAD * 2) / FONT_H;
-    if (cols > COLS) cols = COLS;
+    fit_to_window();
+
+    /* The desktop will not resize a window whose program has not said it
+       can cope. This one can: the scrollback is stored as text, so a new
+       size is only a different number of rows to lay it out in. */
+    win_allow_resize(win);
 
     load_theme();
     history_load();
@@ -1475,6 +1488,15 @@ int main(void) {
                 history_save();
                 win_close(win);
                 return 0;
+            }
+            if (ev.type == WIN_EV_RESIZE) {
+                /* The surface was replaced. Its address is the same, but
+                   everything drawn into it is gone and the shape changed. */
+                scr.w = ev.x;
+                scr.h = ev.y;
+                fit_to_window();
+                view = 0;
+                changed = 1;
             }
             if (ev.type == WIN_EV_KEY) { on_key(ev.key); changed = 1; }
             if (ev.type == WIN_EV_MOUSE && (ev.buttons & WIN_BTN_DOWN)) {

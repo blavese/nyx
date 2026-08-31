@@ -49,6 +49,11 @@
 #define SYS_KILL         34
 #define SYS_TASKS        35
 
+/* A window that can change size. A program has to ask for this: one that
+   never expected it would carry on drawing at the size it last read. */
+#define SYS_WIN_RESIZABLE 36
+#define SYS_WIN_RESIZE    37
+
 /* What SYS_TASKS reports about one task. */
 typedef struct {
     u32  pid;

@@ -60,10 +60,25 @@ class Monitor:
 
     def move_to(self, x, y):
         """The PS/2 pointer is relative and one large jump gets clamped, so
-        walk it into the corner and step out from there."""
+        walk it into the corner and step out from there.
+
+        The step out has to be split as well. Measured: a single move to
+        x=985 left the pointer at 635, which is how a click aimed at a
+        button on the right of the screen quietly lands in the middle of a
+        title bar instead. Nothing reports this; the click simply does
+        something else."""
         for _ in range(12):
             self.send("mouse_move -200 -200", settle=0.05)
-        self.send("mouse_move %d %d" % (x, y), settle=0.35)
+
+        STEP = 100
+        at_x = at_y = 0
+        while at_x < x or at_y < y:
+            dx = min(STEP, x - at_x)
+            dy = min(STEP, y - at_y)
+            self.send("mouse_move %d %d" % (dx, dy), settle=0.05)
+            at_x += dx
+            at_y += dy
+        time.sleep(0.3)
 
     def click(self, x, y):
         self.move_to(x, y)

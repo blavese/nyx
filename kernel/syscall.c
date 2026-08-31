@@ -128,6 +128,17 @@ static i64 sys_kill(registers_t *r) {
     return 0;
 }
 
+static i64 sys_win_resizable(registers_t *r) {
+    task_t *t = task_current();
+    return winsrv_allow_resize(t ? t->pid : 0, (int)r->rbx) ? 0 : -1;
+}
+
+static i64 sys_win_resize(registers_t *r) {
+    task_t *t = task_current();
+    return winsrv_resize(t ? t->pid : 0, (int)r->rbx,
+                         (int)r->rcx, (int)r->rdx) ? 0 : -1;
+}
+
 static i64 sys_tasks(registers_t *r) {
     u32 index = (u32)r->rbx;
     if (!user_range_ok(r->rcx, sizeof(nyx_task_t))) return -1;
@@ -507,6 +518,8 @@ static const syscall_fn TABLE[] = {
     [SYS_WAIT]        = sys_wait,
     [SYS_KILL]        = sys_kill,
     [SYS_TASKS]       = sys_tasks,
+    [SYS_WIN_RESIZABLE] = sys_win_resizable,
+    [SYS_WIN_RESIZE]    = sys_win_resize,
 };
 
 #define N_SYSCALLS (sizeof(TABLE) / sizeof(TABLE[0]))
