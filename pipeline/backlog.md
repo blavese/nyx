@@ -1,0 +1,38 @@
+# Backlog
+
+What the pipeline works through, in order. The top `todo` is taken next.
+
+`author` is who writes it; the other one reviews. They alternate so that
+neither model's blind spots get to compound, and so that every change is read
+by something that did not write it.
+
+`state` is one of `todo`, `doing`, `done`, `blocked`. The scripts write this
+column; everything else is for people. A `blocked` task keeps its logs under
+`pipeline/state/<id>/` and needs a look before it goes back to `todo`.
+
+Keep tasks small enough that one of them is a single sitting's work. "Add a
+driver" is a task; "finish the operating system" is not.
+
+| id | author | title | state |
+|---|---|---|---|
+| rtc-clock | claude | Read the real time from the CMOS clock and expose it as /sys/time, so the desktop shows a clock rather than an uptime counter | todo |
+| pipes | codex | Add pipes: a pipe syscall, a read and write end, blocking on the wait queues that already exist, so two ring 3 programs can talk to each other | todo |
+| lfn-read | claude | Read VFAT long filenames, so a file saved as somethinglong.txt keeps its name instead of being truncated to 8.3 | todo |
+| ap-tasks | codex | Let the other processors run scheduled tasks rather than only work handed to them, with the locking that needs, and a test that proves work really ran on another core | todo |
+| editor | claude | A text editor for the desktop: open, edit, save, using the terminal's line editing and the window resize it already supports | todo |
+| nvme | codex | An NVMe block driver behind the existing block layer, so it works on a machine with no AHCI controller | todo |
+| demand-pages | claude | Map user pages on demand rather than all at once, so a program's address space costs what it uses | todo |
+| xhci-hid | codex | USB: xHCI controller and a HID keyboard, because a modern laptop has no PS/2 port and the desktop is unusable without one | todo |
+
+## Ideas not yet tasks
+
+Too big or too vague to hand to an agent as they stand. Break one down before
+moving it up.
+
+- Sound. An AC97 or HD Audio driver, and something to play through it.
+- Signals, or something like them: a way to interrupt a running program.
+- A service model, so the desktop and the network come up as supervised
+  things rather than calls in a row inside `kmain`.
+- Copy on write, so spawning does not copy an address space it may not need.
+- A packet filter, and something to look at traffic with.
+- Multiple users, which needs permissions, which needs a great deal else.
