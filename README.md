@@ -40,17 +40,32 @@ Something to try once it boots:
 
 A terminal opens. Click the wallpaper, or the badge in the corner, for the
 launcher: paint, settings, and what the machine is made of. Drag a title bar
-to move a window, click one to bring it forward, Escape returns to the shell.
+to move a window; the three dots close it, fill the screen, or put it away.
+Drag the bottom right corner to resize, or drag a title bar to an edge to
+snap. Alt and tab changes window, alt and an arrow snaps, alt and d clears
+the desktop, and shaking a window sends the others away. Escape returns to
+the shell.
 
 Everything on that desktop except the system info window is a separate
 program running in ring 3. Settings cannot reach into the window manager at
 all; it writes a file, and the window manager reads it, which is why the
 desktop changes colour while the settings window is still open.
 
-    mkdir docs
-    cd docs
-    write notes.txt hello
-    cat notes.txt
+In the terminal, which is itself one of those ring 3 programs:
+
+    tree /                 the whole filesystem
+    cat /sys/memory        what is allocated, worked out as you read it
+    ps                     what is running
+    run hello              start another program and wait for it
+    theme amber            and it is remembered next time
+
+Tab completes commands and paths, up and down walk through history, and
+PageUp scrolls back.
+
+    mkdir work
+    cd work
+    write notes hello
+    cat notes
 
     dhcp
     fetch example.com / page.html
@@ -122,6 +137,8 @@ instead.
     bash tools/iso_test.sh      boot it as a disc and as a stick
     bash tools/shell_test.sh    type at the shell over the serial line
     python tools/shotcheck.py   use the desktop and look at the screen
+    python tools/termcheck.py   type into the terminal and check the result
+    python tools/deskcheck.py   move the windows and check where they went
 
 The Windows launcher lives in `launcher/` and is built with
 `dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true`.
@@ -187,8 +204,15 @@ free. kmalloc, kcalloc, kfree.
 
 **Tasks.** Round-robin preemptive multitasking. Each task owns a kernel stack
 holding a complete interrupt frame, so switching is a matter of telling the
-interrupt return path to unwind a different one. Tasks sleep, yield and exit,
-and dead ones are reaped.
+interrupt return path to unwind a different one. Tasks sleep, yield and exit
+with a status somebody can collect, and dead ones are reaped once it has
+been, or after a grace period if nobody asks.
+
+A task can also block on an address and cost nothing while it waits: the
+scheduler skips it entirely, and whoever changes that thing wakes everyone
+waiting on it. The channel is just an address, so nothing has to be declared
+waitable, and a wait can carry a deadline and tell a timeout apart from an
+actual wakeup.
 
 **Disk.** Two drivers behind one block layer. AHCI is tried first, because it
 is what a real machine and every modern virtual machine present: the driver
@@ -247,8 +271,11 @@ so instead each one waits for a function to be handed to it. The boot
 processor still owns the kernel; the others own nothing until they are given
 something.
 
-**Programs.** Ring 3, its own address space per process, and thirty-one system
-calls through int 0x80. An ELF32 loader maps each PT_LOAD segment where the
+**Programs.** Ring 3, its own address space per process, and thirty-eight
+system calls through int 0x80. A program can start another program, block
+until it finishes and read what it returned from `main`, so the terminal
+starting `paint` is one ring 3 process starting another with the kernel only
+lending a hand. An ELF32 loader maps each PT_LOAD segment where the
 file asks and refuses anything that would land in kernel memory. `userland/`
 holds programs built entirely separately: the only thing they share with the
 kernel is the syscall numbers. They are then pasted whole into the kernel
@@ -274,14 +301,26 @@ four brush sizes, and strokes interpolated with Bresenham, because the mouse
 reports in jumps and without it a quick stroke is a row of dots.
 
 **Drivers.** Framebuffer and VGA text consoles, PS/2 keyboard with
-shift/caps/ctrl, PS/2 mouse with a drawn pointer, PIT at 100 Hz, and a 16550
-serial port driven by IRQ4.
+shift/caps/ctrl/alt, arrows and function keys, PS/2 mouse with a drawn
+pointer, PIT at 100 Hz, and a 16550 serial port driven by IRQ4. A key carries
+the modifiers that were held when it was pressed rather than when it is read,
+because by then a chord has usually been let go.
+
+**The filesystem.** Six directories. `/home` is yours and where the shell
+starts, `/doc` is what shipped, `/cfg` is what programs remember, `/tmp` is
+emptied at boot. The other two are not stored anywhere: `/bin` holds the
+programs that live inside the kernel image, and reading a file in `/sys` runs
+the code that works out the answer, so it is never stale. Files that ship
+with the system are offered once, recorded by generation on the disk, so one
+you delete stays deleted.
 
 **The desktop's programs.** The terminal, paint and settings are ordinary ELF
 executables in ring 3. The terminal is a shell that is not part of the kernel:
-listing a directory, reading a file, writing one and fetching a page over TCP
-all go through int 0x80, and its `get` command does an HTTP GET from user
-space. Settings is the interesting one, because it changes how the desktop
+listing a directory, reading a file, writing one, starting another program and
+fetching a page over TCP all go through int 0x80, and its `get` command does
+an HTTP GET from user space. It has a line editor, history kept in `/cfg`, tab
+completion over both commands and paths, and thirty-six commands of its own.
+Settings is the interesting one, because it changes how the desktop
 looks without being able to reach the window manager at all. It writes
 `/nyx.cfg`, a plain "key value" file, and the window manager re-reads that four
 times a second. Anything the window can do can also be done with the shell's
@@ -438,14 +477,15 @@ orders of magnitude away from Linux, which is roughly 30 million lines.
     kernel/isr.S       the 49 interrupt stubs (generated)
     kernel/pic.c       8259 remapping
     kernel/pmm.c       physical frame allocator
-    kernel/paging.c    two-level paging
+    kernel/paging.c    four-level paging
     kernel/heap.c      kmalloc
     kernel/sched.c     preemptive round-robin tasks
+    kernel/wait.c      blocking on an address instead of spinning
     kernel/blockdev.c  picks a disk driver and hides which one
     kernel/ahci.c      sata through ahci
     kernel/ata.c       ata pio disk driver
     kernel/diskfs.c    reading and writing the filesystem image
-    kernel/fs.c        the filesystem itself
+    kernel/fs.c        the in-memory filesystem, for a machine with no disk
     kernel/pci.c       pci configuration space
     kernel/netdev.c    picks a network driver and hides which one
     kernel/e1000.c     intel e1000 driver
@@ -466,7 +506,9 @@ orders of magnitude away from Linux, which is roughly 30 million lines.
     kernel/theme.c     the desktop's appearance, and the file it lives in
     kernel/builtin.S   the user programs, pasted into the kernel image
     kernel/apps.c      the system info window
-    kernel/vfs.c       one namespace over the built-ins, the disk and memory
+    kernel/vfs.c       one namespace over the live tree, the disk and memory
+    kernel/sysfs.c     /sys and /bin: files that are generated when read
+    kernel/layout.c    the directory layout, and what ships in it
     kernel/acpi.c      reading the firmware tables to find the processors
     kernel/smp.c       starting them and handing them work
     bootloader/        the BIOS bootloader, and where a second cpu starts
