@@ -14,7 +14,7 @@
 #define CFG "/nyx.cfg"
 
 #define W 440
-#define H 400
+#define H 440
 
 static surface scr;
 static int win;
@@ -26,6 +26,7 @@ static int wallpaper = 3;
 static int corner = 8;
 static int shadows = 1;
 static int animate = 1;
+static int quirks = 1;
 
 static int dirty_frames;      /* shows a confirmation for a moment after saving */
 
@@ -37,7 +38,11 @@ static const u32 ACCENTS[6] = {
     RGB(0xE0, 0x6A, 0x8C), RGB(0x8A, 0x9B, 0xB0), RGB(0x9A, 0xD1, 0x4A),
 };
 static const char *PRESET_NAMES[6] = { "teal", "indigo", "amber", "rose", "slate", "lime" };
-static const char *WALLPAPERS[4] = { "plain", "grid", "dots", "gradient" };
+/* Seven, in the order theme.h numbers them. */
+#define N_WALLPAPERS 7
+static const char *WALLPAPERS[N_WALLPAPERS] = {
+    "plain", "grid", "dots", "gradient", "stars", "waves", "weave"
+};
 static const int CORNERS[4] = { 0, 4, 8, 14 };
 
 #define BG      RGB(0x15, 0x1B, 0x22)
@@ -82,9 +87,10 @@ static void load(void) {
     corner    = find_value(padded, "corner", corner);
     shadows   = find_value(padded, "shadows", shadows);
     animate   = find_value(padded, "animate", animate);
+    quirks    = find_value(padded, "quirks", quirks);
 
     if (preset < 0 || preset > 5) preset = 0;
-    if (wallpaper < 0 || wallpaper > 3) wallpaper = 3;
+    if (wallpaper < 0 || wallpaper >= N_WALLPAPERS) wallpaper = 3;
     if (corner < 0 || corner > 20) corner = 8;
 }
 
@@ -94,11 +100,11 @@ static void save(void) {
     const char *head = "# written by settings\n";
     for (const char *p = head; *p; p++) out[n++] = *p;
 
-    struct { const char *key; int value; } fields[5] = {
+    struct { const char *key; int value; } fields[6] = {
         { "preset", preset }, { "wallpaper", wallpaper }, { "corner", corner },
-        { "shadows", shadows }, { "animate", animate },
+        { "shadows", shadows }, { "animate", animate }, { "quirks", quirks },
     };
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
         for (const char *p = fields[i].key; *p; p++) out[n++] = *p;
         out[n++] = ' ';
         n += utoa((u32)fields[i].value, out + n);
@@ -116,10 +122,14 @@ static void save(void) {
 typedef struct { int x, y, w, h; } box;
 
 static box swatch_box(int i)    { return (box){ 24 + i * 46, 74, 36, 36 }; }
-static box wallpaper_box(int i) { return (box){ 24 + i * 100, 168, 92, 32 }; }
-static box corner_box(int i)    { return (box){ 24 + i * 62, 258, 54, 32 }; }
-static box shadow_box(void)     { return (box){ 24, 320, 130, 32 }; }
-static box animate_box(void)    { return (box){ 168, 320, 130, 32 }; }
+/* Four across, wrapping, because seven no longer fit on one line. */
+static box wallpaper_box(int i) {
+    return (box){ 24 + (i % 4) * 100, 168 + (i / 4) * 40, 92, 32 };
+}
+static box corner_box(int i)    { return (box){ 24 + i * 62, 298, 54, 32 }; }
+static box shadow_box(void)     { return (box){ 24, 360, 122, 32 }; }
+static box animate_box(void)    { return (box){ 154, 360, 122, 32 }; }
+static box quirks_box(void)     { return (box){ 284, 360, 132, 32 }; }
 
 static int inside(box b, int x, int y) {
     return x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h;
@@ -167,7 +177,7 @@ static void draw_all(void) {
     text(&scr, 24, 120, PRESET_NAMES[preset], FG);
 
     section(152, "wallpaper");
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < N_WALLPAPERS; i++) {
         box b = wallpaper_box(i);
         int on = (i == wallpaper);
         round_rect(&scr, b.x, b.y, b.w, b.h, 6, on ? accent() : PANEL);
@@ -176,7 +186,7 @@ static void draw_all(void) {
                      on ? RGB(0x10, 0x16, 0x1C) : FG);
     }
 
-    section(242, "corners");
+    section(282, "corners");
     for (int i = 0; i < 4; i++) {
         box b = corner_box(i);
         int on = (CORNERS[i] == corner);
@@ -189,9 +199,10 @@ static void draw_all(void) {
                      on ? RGB(0x10, 0x16, 0x1C) : FG);
     }
 
-    section(304, "effects");
+    section(344, "effects");
     toggle(shadow_box(), "shadows", shadows);
     toggle(animate_box(), "smooth", animate);
+    toggle(quirks_box(), "quirks", quirks);
 
     if (dirty_frames > 0) {
         const char *msg = "saved to /nyx.cfg";
@@ -205,12 +216,13 @@ static void draw_all(void) {
 static void on_click(int x, int y) {
     for (int i = 0; i < 6; i++)
         if (inside(swatch_box(i), x, y)) { preset = i; save(); return; }
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < N_WALLPAPERS; i++)
         if (inside(wallpaper_box(i), x, y)) { wallpaper = i; save(); return; }
     for (int i = 0; i < 4; i++)
         if (inside(corner_box(i), x, y)) { corner = CORNERS[i]; save(); return; }
     if (inside(shadow_box(), x, y))  { shadows = !shadows; save(); return; }
     if (inside(animate_box(), x, y)) { animate = !animate; save(); return; }
+    if (inside(quirks_box(), x, y))  { quirks = !quirks; save(); return; }
 }
 
 int main(void);

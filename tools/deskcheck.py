@@ -62,6 +62,27 @@ def page_pixels(mon, name, shots, rect=WHOLE):
     return count_in(px, w, rect, PAGE)
 
 
+# What the monitor calls the keys that are not letters.
+NAMED = {" ": "spc", "\n": "ret", "/": "slash", ".": "dot"}
+
+
+def typed(mon, text):
+    for ch in text:
+        mon.send("sendkey %s" % NAMED.get(ch, ch), settle=0.06)
+
+
+def wallpaper_shot(mon, name, shots):
+    """The bare desktop, as raw bytes, so two of them can be compared without
+    caring what is actually drawn on it."""
+    w, h, px, ppm = mon.screen(name)
+    shots.append(ppm)
+    out = bytearray()
+    for y in range(0, SCREEN_H - TASKBAR_H, 3):
+        row = y * w * 3
+        out += px[row:row + SCREEN_W * 3]
+    return bytes(out)
+
+
 def alt(mon, key):
     """A chord. The monitor spells these with a dash."""
     mon.send("sendkey alt-%s" % key, settle=0.4)
@@ -182,6 +203,38 @@ def main():
         on_right = count_in(px, w, RIGHT_HALF, PAGE)
         checks.append(("and alt and right to the other",
                        on_right > 300000 and on_left < 1000))
+
+        # --- the wallpapers -----------------------------------------------
+        #
+        # Set through the config file, from the terminal, which is the same
+        # path the settings window uses: a ring 3 program writes a file and
+        # the window manager notices. Everything is put away first so what
+        # is measured is only the desktop.
+        # The terminal is on screen already at this point, so clicking its
+        # taskbar chip would put it away rather than bring it back.
+        time.sleep(0.5)
+        typed(mon, "write /nyx.cfg wallpaper 4\n")     # stars
+        time.sleep(2.5)
+        alt(mon, "d")
+        time.sleep(1.5)
+        stars_a = wallpaper_shot(mon, "desk-stars-a", shots)
+
+        time.sleep(1.5)
+        stars_b = wallpaper_shot(mon, "desk-stars-b", shots)
+        checks.append(("a wallpaper written from ring 3 reaches the desktop",
+                       len(stars_a) > 0))
+        checks.append(("and one that drifts is not the same twice",
+                       stars_a != stars_b))
+
+        mon.click(*TASKBAR_CHIP)
+        time.sleep(1.5)
+        typed(mon, "write /nyx.cfg wallpaper 6\n")     # weave
+        time.sleep(2.5)
+        alt(mon, "d")
+        time.sleep(1.5)
+        weave = wallpaper_shot(mon, "desk-weave", shots)
+        checks.append(("a different wallpaper draws differently",
+                       weave != stars_a and weave != stars_b))
 
         # --- alt+tab ------------------------------------------------------
         #
