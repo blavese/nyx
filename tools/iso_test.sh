@@ -12,6 +12,10 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# Taken from the one place that defines it, so a version bump does not
+# quietly turn these checks into ones that can never pass.
+VERSION=$(grep KERNEL_VERSION include/types.h | cut -d'"' -f2)
+
 QEMU="${QEMU:-}"
 [ -z "$QEMU" ] && QEMU=$(command -v qemu-system-x86_64 || true)
 [ -z "$QEMU" ] && QEMU="/c/Program Files/qemu/qemu-system-x86_64.exe"
@@ -50,7 +54,7 @@ run() {
         > "$out" 2>&1 || true
 
   echo "--- $what ---"
-  for want in "nyx 0.7.0" "long mode" "progs" "nyx:/home>" "$what"; do
+  for want in "nyx $VERSION" "long mode" "progs" "nyx:/home>" "$what"; do
     if grep -qF "$want" "$out"; then echo "  PASS  $want"
     else echo "  FAIL  $want"; fails=$((fails+1)); fi
   done
