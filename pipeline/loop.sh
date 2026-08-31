@@ -19,6 +19,16 @@ consecutive_failures=0
 landed=0
 blocked=0
 
+# Nothing below is worth starting if an agent cannot answer or the gate
+# cannot run. Finding that out one blocked task at a time is the expensive
+# way to learn it.
+if ! bash "$PIPE/preflight.sh"; then
+  echo
+  echo "not starting"
+  exit 1
+fi
+echo
+
 echo "=== pipeline ==="
 echo "backlog: $(backlog_count_todo) task(s) to do, budget $MAX_CYCLES cycle(s)"
 echo
