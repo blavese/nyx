@@ -22,6 +22,7 @@ mkdir -p build
 
 python tools/flatten.py build/cdboot.elf build/cdboot.bin 0x7C00
 echo "built build/cdboot.bin ($(filesize build/cdboot.bin) bytes)"
+python tools/check_loader.py build/cdboot.bin
 
 "$ZIG" cc -target x86-freestanding-none -mcpu=i686   -ffreestanding -nostdlib -static -c   -o build/mbr.o bootloader/mbr.S
 "$ZIG" ld.lld -T bootloader/mbr.ld -o build/mbr.elf build/mbr.o
