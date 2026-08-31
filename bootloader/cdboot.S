@@ -74,6 +74,11 @@ patch_self:     .long 0          /* the sector this file itself came from */
    the read would replace it with the value the file has on disc, which for
    the drive number is zero, and zero is a different device. */
 .set DRIVE_STASH,  0x7000
+/* The read packet for stage one's own reload. It cannot live inside this
+   sector: the sector is about to be overwritten by the very read the packet
+   describes, and firmware is entitled to look at the packet again after the
+   transfer. Spare low memory, well below the stack. */
+.set S1_DAP,       0x7010
 .set CHUNK_SECTORS, 16           /* 16 x 2048 = 32 KiB per read */
 
 /* --- stage one, which must fit below 0x7E00 ----------------------------- */
@@ -110,13 +115,20 @@ stage1:
     movw    $2048, %ax
     xorw    %dx, %dx
     divw    s1_secsize
-    movw    %ax, s1_count
-    movzwl  %ax, %ecx
+    movw    %ax, %cx                 /* sectors to read */
+    movzwl  %ax, %ebx
     movl    patch_self, %eax
-    mull    %ecx
-    movl    %eax, s1_lba
+    mull    %ebx                     /* eax = where, in device sectors */
 
-    movw    $s1_dap, %si
+    /* Built out here rather than in the image, for the reason at S1_DAP. */
+    movw    $S1_DAP, %si
+    movw    $0x0010, (%si)           /* packet is 16 bytes, reserved 0 */
+    movw    %cx, 2(%si)
+    movw    $0x7C00, 4(%si)          /* straight back over ourselves */
+    movw    $0, 6(%si)
+    movl    %eax, 8(%si)
+    movl    $0, 12(%si)
+
     movb    s1_drive, %dl
     movb    $0x42, %ah
     int     $0x13
@@ -147,16 +159,6 @@ s1_secsize: .word 2048
 s1_msg:     .asciz "nyx: cannot read the boot device\r\n"
 
 .align 4
-s1_dap:
-    .byte   16
-    .byte   0
-s1_count:   .word 1
-    .word   0x7C00              /* straight back over ourselves */
-    .word   0
-s1_lba:     .long 0
-    .long   0
-
-.align 4
 s1_params:  .space 0x1E
 
 /* --- stage two ---------------------------------------------------------- */
@@ -167,11 +169,28 @@ real_start:
     movw    $msg_boot, %si
     call    print
 
+    /* Each step names itself before it runs. On firmware that stops
+       partway there is nothing else to go on: the screen is all there is,
+       and the last word on it is the step that did not finish. */
+    movw    $msg_a20, %si
+    call    print
     call    enable_a20
+
+    movw    $msg_geo, %si
+    call    print
     call    probe_geometry
     call    zero_handoff
+
+    movw    $msg_mem, %si
+    call    print
     call    read_memory_map
+
+    movw    $msg_unreal, %si
+    call    print
     call    enter_unreal
+
+    movw    $msg_load, %si
+    call    print
     call    load_payload
 
     movw    $msg_go, %si
@@ -580,7 +599,12 @@ gdt_desc:
     .long   gdt
 
 loader_name:  .asciz "bios"
-msg_boot:     .asciz "nyx bootloader\r\nloading "
+msg_boot:     .asciz "nyx bootloader\r\n"
+msg_a20:      .asciz "a20 "
+msg_geo:      .asciz "geometry "
+msg_mem:      .asciz "memory "
+msg_unreal:   .asciz "unreal "
+msg_load:     .asciz "loading "
 msg_dot:      .asciz "."
 msg_nl:       .asciz "\r\n"
 msg_go:       .asciz "starting kernel\r\n"
