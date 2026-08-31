@@ -24,6 +24,24 @@ The other half is that neither of them decides whether the work was any
 good. `gate.sh` does, mechanically, and nothing reaches `main` without it.
 An agent reporting success is not evidence.
 
+## Before the first run
+
+Both agents have to be signed in, and they sign in separately from whatever
+session you are reading this in.
+
+    bash pipeline/preflight.sh
+
+That asks each one a trivial question and checks the emulator, python, and
+the state of the tree. It takes a few seconds and it exists because the
+expensive failure is not a task going wrong, it is a task going wrong for a
+reason that would have stopped every task. An expired login turns the whole
+backlog into blocked tasks one cycle at a time.
+
+If it says claude did not answer, run `claude` once, sign in, and quit. The
+command line tool keeps its own credentials.
+
+`loop.sh` runs preflight first and refuses to start if it fails.
+
 ## Running it
 
     bash pipeline/loop.sh                 work through the backlog
@@ -107,6 +125,7 @@ forty minutes of wall clock, most of it in QEMU.
 
 ## Files
 
+    preflight.sh        checks both agents answer before spending an hour
     lib.sh              finding the agents, running them, reading the backlog
     gate.sh             the verification, fast and full
     cycle.sh            one task, start to finish
@@ -116,4 +135,5 @@ forty minutes of wall clock, most of it in QEMU.
       implement.md      writing a change
       review.md         reading someone else's
       address.md        answering a review
+    selftest.sh         the pipeline's own test, with scripted agents
     state/<task-id>/    everything a cycle produced, kept whether it worked
