@@ -74,11 +74,14 @@ patch_self:     .long 0          /* the sector this file itself came from */
    the read would replace it with the value the file has on disc, which for
    the drive number is zero, and zero is a different device. */
 .set DRIVE_STASH,  0x7000
-/* The read packet for stage one's own reload. It cannot live inside this
-   sector: the sector is about to be overwritten by the very read the packet
-   describes, and firmware is entitled to look at the packet again after the
-   transfer. Spare low memory, well below the stack. */
+/* The read packet for stage one's own reload, and somewhere to put what
+   comes back. Neither can live inside this sector: it is about to be
+   replaced by the very read being described, and there has to be something
+   left running to check the result. Spare low memory, below the stack and
+   clear of everything stage two uses. */
 .set S1_DAP,       0x7010
+.set S1_SCRATCH,   0x9000
+.set S1_SIG,       0x3158594E        /* "NYX1" */
 .set CHUNK_SECTORS, 16           /* 16 x 2048 = 32 KiB per read */
 
 /* --- stage one, which must fit below 0x7E00 ----------------------------- */
@@ -110,11 +113,34 @@ stage1:
     ja      1f
     movw    %ax, s1_secsize
 
-1:  /* One 2048 byte block covers this whole file, however many device
+1:  /* The sector size decides both how many to ask for and where the
+       loader is, so getting it wrong reads the wrong part of the disc.
+       Firmware that misreports it would hand back something that is not
+       this loader at all, and jumping into that is a dead machine with
+       nothing on screen to say why. So: read somewhere else, check what
+       came back, and only then move it into place.
+
+       Three attempts. What the firmware said, then the two it could
+       actually be. */
+    movw    s1_secsize, %ax
+    movw    %ax, s1_sizes
+    movw    $0, s1_try
+
+try_read:
+    movw    s1_try, %bx
+    addw    %bx, %bx
+    movw    s1_sizes(%bx), %ax
+    testw   %ax, %ax
+    jz      next_try                 /* nothing sensible reported */
+    movw    %ax, s1_secsize
+
+    /* One 2048 byte block covers this whole file, however many device
        sectors that turns out to be. */
     movw    $2048, %ax
     xorw    %dx, %dx
     divw    s1_secsize
+    testw   %ax, %ax
+    jz      next_try
     movw    %ax, %cx                 /* sectors to read */
     movzwl  %ax, %ebx
     movl    patch_self, %eax
@@ -124,7 +150,7 @@ stage1:
     movw    $S1_DAP, %si
     movw    $0x0010, (%si)           /* packet is 16 bytes, reserved 0 */
     movw    %cx, 2(%si)
-    movw    $0x7C00, 4(%si)          /* straight back over ourselves */
+    movw    $S1_SCRATCH, 4(%si)      /* somewhere it can be looked at */
     movw    $0, 6(%si)
     movl    %eax, 8(%si)
     movl    $0, 12(%si)
@@ -132,11 +158,29 @@ stage1:
     movb    s1_drive, %dl
     movb    $0x42, %ah
     int     $0x13
-    jc      s1_failed
+    jc      next_try
 
-    /* Everything is really here now. Carry on in the copy that was just
-       read, which is byte for byte what is already executing, except for
-       anything stage one wrote into it. */
+    /* Past the 512 bytes firmware is obliged to load, so finding it proves
+       the rest of the loader really did arrive. */
+    cmpl    $S1_SIG, S1_SCRATCH + (s1_signature - _start)
+    je      s1_loaded
+
+next_try:
+    incw    s1_try
+    cmpw    $3, s1_try
+    jb      try_read
+    jmp     s1_failed
+
+s1_loaded:
+    /* Move it into place. The first 512 bytes are what is executing right
+       now and are byte for byte the same, so overwriting them mid-copy
+       changes nothing. */
+    cld
+    movw    $S1_SCRATCH, %si
+    movw    $0x7C00, %di
+    movw    $1024, %cx
+    rep     movsw
+
     movw    $DRIVE_STASH, %bx
     movb    (%bx), %dl
     jmp     real_start
@@ -156,6 +200,9 @@ s1_failed:
 .align 4
 s1_drive:   .byte 0
 s1_secsize: .word 2048
+s1_try:     .word 0
+/* What the firmware said, then the only two a boot device actually uses. */
+s1_sizes:   .word 0, 2048, 512
 s1_msg:     .asciz "nyx: cannot read the boot device\r\n"
 
 .align 4
@@ -611,3 +658,14 @@ msg_go:       .asciz "starting kernel\r\n"
 msg_halt:     .asciz "\r\nhalted.\r\n"
 msg_nomem:    .asciz "the firmware would not describe memory"
 msg_readfail: .asciz "could not read the boot device"
+
+/* Sits past the 512 bytes firmware is obliged to load, so stage one finding
+   it is proof the whole file arrived rather than just the first sector. Its
+   offset is whatever the assembler puts it at; stage one refers to it by
+   name, so nothing has to agree on a number. bootloader/build.sh checks it
+   landed where it has to, because the assembler cannot: the difference of
+   two symbols is not known until they are linked. */
+.align 4
+.globl s1_signature
+s1_signature:
+    .long 0x3158594E
