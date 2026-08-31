@@ -226,6 +226,80 @@ static void draw_wallpaper(void) {
         break;
     }
 
+    case WALLPAPER_STARS: {
+        /* The field is not stored anywhere. Each star's place comes from
+           multiplying its number by a large odd constant and keeping the
+           middle bits, which scatters them well enough to look unplanned
+           and costs nothing to keep. Drift comes from the clock, so the
+           whole thing is a function of the time and the star's number. */
+        fb_rect(0, 0, fb_width(), (u32)h, t->desktop);
+        u32 drift = (u32)(timer_ticks() / 3);
+
+        for (u32 i = 0; i < 240; i++) {
+            u32 hx = i * 2654435761u;
+            u32 hy = i * 2246822519u;
+
+            u32 speed = 1 + (i % 3);            /* nearer stars move faster */
+            u32 x = ((hx >> 9) + drift * speed) % fb_width();
+            u32 y = (hy >> 9) % (u32)h;
+
+            u32 c = lighten(t->desktop, 25 + (int)(i % 3) * 45);
+            fb_put(x, y, c);
+            if (i % 9 == 0) {                   /* a few brighter ones */
+                fb_put(x + 1, y, c);
+                fb_put(x, y + 1, c);
+                fb_put(x + 1, y + 1, c);
+            }
+        }
+        break;
+    }
+
+    case WALLPAPER_WAVES: {
+        /* Bands whose height follows a quarter of a sine, mirrored out to a
+           full period. A table is smaller than the code to compute one and
+           this is the only place anything here needs a curve. */
+        static const u8 QUARTER[17] = {
+            0, 24, 49, 73, 97, 120, 142, 163, 181, 198, 212, 224,
+            233, 240, 245, 247, 248
+        };
+        fb_rect(0, 0, fb_width(), (u32)h, t->desktop);
+
+        for (u32 x = 0; x < fb_width(); x++) {
+            u32 phase = (x / 3) % 64;
+            int v = (phase < 16) ? QUARTER[phase]
+                  : (phase < 32) ? QUARTER[32 - phase]
+                  : (phase < 48) ? -QUARTER[phase - 32]
+                                 : -QUARTER[64 - phase];
+
+            for (int band = 0; band < 5; band++) {
+                int y = h * (band + 1) / 6 + v / 8;
+                if (y < 0 || y >= h) continue;
+                fb_rect(x, (u32)y, 1, 2, lighten(t->desktop, 10 + band * 4));
+            }
+        }
+        break;
+    }
+
+    case WALLPAPER_WEAVE: {
+        /* Diagonals both ways. Two passes rather than one so the crossings
+           come out brighter, which is what makes it read as woven. */
+        fb_rect(0, 0, fb_width(), (u32)h, t->desktop);
+        u32 line = lighten(t->desktop, 12);
+        int span = (int)fb_width() + h;
+
+        for (int d = 0; d < span; d += 24)
+            for (int k = 0; k < h; k++) {
+                int x = d - k;
+                if (x >= 0 && x < (int)fb_width()) fb_put((u32)x, (u32)k, line);
+            }
+        for (int d = -h; d < (int)fb_width(); d += 24)
+            for (int k = 0; k < h; k++) {
+                int x = d + k;
+                if (x >= 0 && x < (int)fb_width()) fb_put((u32)x, (u32)k, line);
+            }
+        break;
+    }
+
     default:
         fb_rect(0, 0, fb_width(), (u32)h, t->desktop);
         break;
@@ -789,7 +863,7 @@ static void handle_mouse(int mx, int my, u8 buttons) {
         if (zone != snap_preview) { snap_preview = zone; needs_composite = true; }
 
         shake_note(mx);
-        if (shake_detected()) {
+        if (theme()->quirks && shake_detected()) {
             for (int i = 0; i < nwin; i++)
                 if (stack[i] != dragging) set_minimized(stack[i], true);
             shake_reset();
@@ -1011,9 +1085,13 @@ void wm_run(void) {
             if (stack[i]->dirty) needs_composite = true;
 
         /* The taskbar clock ticks, so repaint at least once a second even
-           when nothing else changed. */
+           when nothing else changed. A wallpaper that moves needs it far
+           more often than that, but only while it is the one on. */
         static u64 last_tick;
-        if (timer_ticks() - last_tick >= timer_hz()) {
+        u64 every = wallpaper_moves(theme()->wallpaper) ? timer_hz() / 12
+                                                        : timer_hz();
+        if (!every) every = 1;
+        if (timer_ticks() - last_tick >= every) {
             last_tick = timer_ticks();
             needs_composite = true;
         }

@@ -30,6 +30,8 @@ static const struct {
     { "lime",   RGB(0x9A, 0xD1, 0x4A), RGB(0x14, 0x1A, 0x14), RGB(0x1D, 0x25, 0x1D) },
 };
 
+bool wallpaper_moves(wallpaper_t w) { return w == WALLPAPER_STARS; }
+
 const char *theme_preset_name(int i) {
     if (i < 0 || i >= THEME_PRESETS) return "";
     return PRESETS[i].name;
@@ -63,6 +65,7 @@ void theme_init(void) {
     current.corner = 8;
     current.shadows = true;
     current.animate = true;
+    current.quirks = true;
     theme_reload();
 }
 
@@ -103,6 +106,7 @@ static void apply(const char *key, const char *value) {
     }
     else if (!strcmp(key, "shadows")) current.shadows = parse_dec(value) != 0;
     else if (!strcmp(key, "animate")) current.animate = parse_dec(value) != 0;
+    else if (!strcmp(key, "quirks"))  current.quirks = parse_dec(value) != 0;
     else if (!strcmp(key, "preset"))  theme_apply_preset((int)parse_dec(value));
 }
 
@@ -172,6 +176,7 @@ bool theme_save(void) {
         { "surface",   current.surface,         true },
         { "text",      current.text,            true },
         { "wallpaper", (u32)current.wallpaper,  false },
+        { "quirks",    (u32)(current.quirks ? 1 : 0), false },
         { "corner",    (u32)current.corner,     false },
         { "shadows",   current.shadows ? 1u : 0u, false },
         { "animate",   current.animate ? 1u : 0u, false },

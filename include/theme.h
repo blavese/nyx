@@ -15,8 +15,15 @@ typedef enum {
     WALLPAPER_GRID,
     WALLPAPER_DOTS,
     WALLPAPER_GRADIENT,
+    WALLPAPER_STARS,        /* drifts, so the desktop is never quite still */
+    WALLPAPER_WAVES,
+    WALLPAPER_WEAVE,
     WALLPAPER_COUNT
 } wallpaper_t;
+
+/* True for a wallpaper that has to be redrawn to look right, which is what
+   tells the window manager to keep painting when nothing else has changed. */
+bool wallpaper_moves(wallpaper_t w);
 
 typedef struct {
     u32 accent;          /* title bars, highlights, the pointer's own colour */
@@ -29,6 +36,11 @@ typedef struct {
     int  corner;         /* window corner radius, 0 for square */
     bool shadows;
     bool animate;        /* menus and highlights fade rather than snap */
+
+    /* The playful behaviour: shaking a window to clear the others away, and
+       anything else that is delightful the first time and in the way the
+       twentieth. Off is a real setting, not a hidden one. */
+    bool quirks;
 } theme_t;
 
 void theme_init(void);
