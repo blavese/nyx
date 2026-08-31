@@ -37,6 +37,9 @@ void paging_init(void);
 /* Operate on whichever address space is loaded. */
 bool map_page(u64 virt, u64 phys, u64 flags);
 void unmap_page(u64 virt);
+
+/* The same, in an address space that is not necessarily the live one. */
+void unmap_page_in(u64 pml4_phys, u64 virt);
 u64  virt_to_phys(u64 virt);
 
 /* Operate on a named address space, which need not be the active one. */

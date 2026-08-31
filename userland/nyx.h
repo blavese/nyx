@@ -58,6 +58,8 @@ typedef long long          nyx_word;
 #define SYS_WAIT        33
 #define SYS_KILL        34
 #define SYS_TASKS       35
+#define SYS_WIN_RESIZABLE 36
+#define SYS_WIN_RESIZE    37
 
 /* The one door into the kernel. The registers are the same ones a 32-bit nyx
    used, only twice as wide, which is why every argument is a word rather than
@@ -327,6 +329,9 @@ static inline int run_program(const char *path) {
 #define WIN_EV_MOUSE 1
 #define WIN_EV_KEY   2
 #define WIN_EV_CLOSE 3
+/* The window is a different size. x and y carry the new content size, and
+   whatever was drawn is gone: ask for the surface again and redraw. */
+#define WIN_EV_RESIZE 4
 
 /* Bit 7 of buttons is set on the event that started a press, so a program
    can tell a new stroke from the middle of one. */
@@ -386,6 +391,21 @@ static inline int win_commit(int handle) {
 
 static inline int win_close(int handle) {
     return syscall(SYS_WIN_CLOSE, handle, 0, 0);
+}
+
+/* Says this program can cope with its window changing size. Until it does,
+   the desktop leaves the window alone: the edges do not drag, and maximise
+   and snapping are refused. After it, a WIN_EV_RESIZE says the surface has
+   been replaced, and everything drawn into the old one is gone.
+
+   The address from win_surface stays the same across a resize, so a program
+   that keeps the pointer does not have to ask again, only redraw. */
+static inline int win_allow_resize(int handle) {
+    return syscall(SYS_WIN_RESIZABLE, handle, 0, 0);
+}
+
+static inline int win_resize(int handle, int w, int h) {
+    return syscall(SYS_WIN_RESIZE, handle, w, h);
 }
 
 #define RGB(r, g, b) (((u32)(r) << 16) | ((u32)(g) << 8) | (u32)(b))

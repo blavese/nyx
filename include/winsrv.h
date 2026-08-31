@@ -9,15 +9,37 @@
 
 #define WINSRV_MAX 8
 
-/* Where a program's first surface appears in its own address space. Each
-   further window starts a megabyte higher. Inside user space, well clear of
-   where a program's own code and stack go. */
+/* Where a program's first surface appears in its own address space. Inside
+   user space, well clear of where a program's own code and stack go.
+
+   The step has to be at least as large as the biggest surface, or one
+   window's pages would run into the next window's base. The largest this
+   accepts is 1600x1200, which is 7.5 MiB, so eight covers it with room for
+   a window to be resized larger than it opened. */
 #define WINSRV_SURFACE_BASE (USER_SPACE_BASE + 0x60000000ull)
-#define WINSRV_SURFACE_STEP 0x00100000ull
+#define WINSRV_SURFACE_STEP 0x00800000ull
 
 void winsrv_init(void);
 
 int  winsrv_create(u32 pid, const char *title, int cw, int ch);
+
+/* Gives a window a different size. The surface is reallocated and remapped
+   at the same address the program already has, so its pointer stays good,
+   but everything it drew is gone and it is told to draw again.
+
+   Only windows whose owner asked to be resizable are ever resized, because
+   a program that does not expect it would carry on writing to the size it
+   last saw. */
+bool winsrv_resize(u32 pid, int handle, int cw, int ch);
+bool winsrv_allow_resize(u32 pid, int handle);
+
+/* The window manager's way in, for a window it is resizing itself. This
+   only records the size; see the note on want_cw in wm.h. */
+bool winsrv_resize_window(window_t *w, int cw, int ch);
+
+/* Frees surfaces that have been replaced. Called by the window manager at a
+   point where it is holding no pointer into one. */
+void winsrv_reap_retired(void);
 u64  winsrv_surface(u32 pid, int handle, u64 dir);   /* user address, or 0 */
 int  winsrv_size(u32 pid, int handle);               /* cw << 16 | ch, or -1 */
 bool winsrv_poll(u32 pid, int handle, wm_event_t *out);

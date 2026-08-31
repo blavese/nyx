@@ -382,7 +382,8 @@ void shell_task(void) {
     for (;;) {
         int ch = kbd_trygetchar();
         if (ch < 0) { hlt(); continue; }   /* woken by the timer or a key */
-        char c = (char)ch;
+        /* The console has no shortcuts, so a chord is just its character. */
+        char c = (char)KEY_CODE(ch);
 
         if (c == '\n') {
             kputc('\n');

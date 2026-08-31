@@ -19,9 +19,31 @@
 #define KEY_INSERT    0x109
 #define KEY_F1        0x110      /* F1..F12 run consecutively */
 
-#define KEY_IS_SPECIAL(k) ((k) >= 0x100)
+/* Which modifiers were held at the moment the key was pressed.
+ *
+ * These travel with the key rather than being asked for afterwards. A key
+ * sits in the buffer until somebody reads it, and by then the modifier has
+ * usually been let go: measured on a chord sent as fast as a machine can
+ * send one, every arrow key arrived with alt already false, so a shortcut
+ * built on reading the flag later worked only by luck. */
+#define KEY_MOD_ALT   0x10000
+#define KEY_MOD_CTRL  0x20000
+#define KEY_MOD_SHIFT 0x40000
+#define KEY_MODS      0x70000
+
+/* The key itself, with the modifiers taken off. */
+#define KEY_CODE(k)   ((k) & 0xFFFF)
+
+#define KEY_IS_SPECIAL(k) (KEY_CODE(k) >= 0x100)
 
 void keyboard_init(void);
 bool kbd_has_char(void);
 char kbd_getchar(void);          /* blocking */
 int  kbd_trygetchar(void);       /* -1 when empty */
+
+/* Whether a modifier is held at this instant. Right for asking about the
+   state of the keyboard now; wrong for asking what was held when a key that
+   is being read was pressed, which is what KEY_MOD_* on the key says. */
+bool kbd_alt(void);
+bool kbd_ctrl(void);
+bool kbd_shift(void);
