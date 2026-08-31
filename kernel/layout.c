@@ -96,10 +96,16 @@ void layout_init(void) {
          "code, the scheduler, the FAT16 driver, the TCP stack, the window\n"
          "manager, and the font on your screen.\n"
          "\n"
-         "Start with:  help        every command\n"
-         "             tour        a walk through what works\n"
-         "             tree        this filesystem\n"
-         "             desktop     windows and a mouse\n");
+         "At this prompt:   guide       a walk through what works\n"
+         "                   help        every command\n"
+         "                   desktop     windows, a mouse and a terminal\n"
+         "\n"
+         "In the terminal on the desktop, which is a separate program\n"
+         "running outside the kernel:\n"
+         "\n"
+         "                   help        its own, longer command list\n"
+         "                   tree        this filesystem, all of it\n"
+         "                   sys         the machine, as files\n");
 
     seed(1, "/doc/filesystem",
          "Where things live\n"
