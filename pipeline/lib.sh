@@ -83,8 +83,16 @@ run_claude() {
   [ -n "${FAKE_AGENTS:-}" ] && { fake_agent "$FAKE_ROLE" "$out"; return $?; }
   [ -x "$CLAUDE" ] || command -v claude >/dev/null || { warn "claude not found"; return 127; }
 
+  # The tools it is allowed, named rather than blanket-bypassed. Bash is
+  # the one that matters: without it the agent writes code and then asks
+  # permission to build it, which unattended means it never builds at all.
+  # Nothing here reaches the network.
+  #
+  # The prompt goes on stdin because --allowedTools takes a list and would
+  # otherwise swallow a prompt given as an argument.
   ( cd "$ROOT" && timeout "${AGENT_TIMEOUT:-3600}" "$CLAUDE" -p \
       --permission-mode acceptEdits \
+      --allowedTools "Bash Read Write Edit Glob Grep" \
       --add-dir "$ROOT" \
       "$@" \
       < "$prompt_file" ) > "$out" 2>&1

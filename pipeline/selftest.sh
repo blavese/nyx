@@ -38,7 +38,7 @@ setup_repo() {
   git init -q .
   git config user.email t@t; git config user.name t
 
-  cp "$ROOT/pipeline/lib.sh" "$ROOT/pipeline/cycle.sh" pipeline/
+  cp "$ROOT/pipeline"/{lib.sh,cycle.sh,models.sh,parse_review.py} pipeline/
   cp "$ROOT/pipeline"/prompts/*.md pipeline/prompts/
   echo "placeholder" > thing.c
 
