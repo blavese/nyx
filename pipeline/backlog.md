@@ -15,9 +15,9 @@ driver" is a task; "finish the operating system" is not.
 
 | id | author | title | state |
 |---|---|---|---|
-| rtc-clock | claude | Read the real time from the CMOS clock and expose it as /sys/time, so the desktop shows a clock rather than an uptime counter | doing |
-| pipes | codex | Add pipes: a pipe syscall, a read and write end, blocking on the wait queues that already exist, so two ring 3 programs can talk to each other | doing |
-| lfn-read | claude | Read VFAT long filenames, so a file saved as somethinglong.txt keeps its name instead of being truncated to 8.3 | doing |
+| rtc-clock | claude | Read the real time from the CMOS clock and expose it as /sys/time, so the desktop shows a clock rather than an uptime counter | blocked |
+| pipes | codex | Add pipes: a pipe syscall, a read and write end, blocking on the wait queues that already exist, so two ring 3 programs can talk to each other | blocked |
+| lfn-read | claude | Read VFAT long filenames, so a file saved as somethinglong.txt keeps its name instead of being truncated to 8.3 | blocked |
 | ap-tasks | codex | Let the other processors run scheduled tasks rather than only work handed to them, with the locking that needs, and a test that proves work really ran on another core | todo |
 | editor | claude | A text editor for the desktop: open, edit, save, using the terminal's line editing and the window resize it already supports | todo |
 | nvme | codex | An NVMe block driver behind the existing block layer, so it works on a machine with no AHCI controller | todo |
