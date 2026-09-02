@@ -20,6 +20,7 @@
 # worst placed to answer it.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/models.sh"
 
 MAX_REPAIRS="${MAX_REPAIRS:-2}"
 PUSH="${PUSH:-0}"                 # off unless asked: main is a public repo
@@ -98,9 +99,10 @@ prompt_from implement.md "$CYCLE_DIR/implement.prompt" "TASK=$TITLE"
 
 if [ "$AUTHOR" = codex ]; then
   run_codex "$CYCLE_DIR/implement.prompt" "$CYCLE_DIR/author-report.txt" \
-      > "$CYCLE_DIR/author-stdout.txt" 2>&1
+      $(codex_args_for implement) > "$CYCLE_DIR/author-stdout.txt" 2>&1
 else
-  run_claude "$CYCLE_DIR/implement.prompt" "$CYCLE_DIR/author-report.txt"
+  run_claude "$CYCLE_DIR/implement.prompt" "$CYCLE_DIR/author-report.txt" \
+      $(claude_args_for)
 fi
 author_rc=$?
 [ "$author_rc" -eq 0 ] || abandon "$AUTHOR exited $author_rc"
@@ -109,7 +111,11 @@ author_rc=$?
 # The backlog was marked "doing" a moment ago and the state directory is
 # ours, so neither counts as the author having done anything. Without
 # excluding them, a run where the agent wrote no code looks like a change.
-CHANGED="$(git diff --name-only -- . ':!pipeline/backlog.md' ':!pipeline/state')"
+# status, not diff: this very task added kernel/rtc.c and include/rtc.h,
+# and neither showed up in `git diff` because they were not tracked yet. A
+# task whose whole output is new files would look like an agent that sat
+# there doing nothing.
+CHANGED="$(git status --porcelain -- . ':!pipeline/backlog.md' ':!pipeline/state')"
 [ -n "$CHANGED" ] || abandon "$AUTHOR changed no files"
 log "changed: $(printf '%s' "$CHANGED" | tr '\n' ' ')"
 
@@ -131,32 +137,15 @@ prompt_from review.md "$CYCLE_DIR/review.prompt" \
 
 if [ "$REVIEWER" = codex ]; then
   run_codex "$CYCLE_DIR/review.prompt" "$CYCLE_DIR/review.json" \
-      > "$CYCLE_DIR/review-stdout.txt" 2>&1
+      $(codex_args_for review) > "$CYCLE_DIR/review-stdout.txt" 2>&1
 else
-  run_claude "$CYCLE_DIR/review.prompt" "$CYCLE_DIR/review.json"
+  run_claude "$CYCLE_DIR/review.prompt" "$CYCLE_DIR/review.json" $(claude_args_for)
 fi
 
-# The reviewer is asked for JSON. Models sometimes wrap it in prose, so take
-# the object rather than trusting the whole reply.
-python - "$CYCLE_DIR/review.json" "$CYCLE_DIR/findings.json" <<'PY'
-import io, json, sys
-raw = io.open(sys.argv[1], encoding="utf-8", errors="replace").read()
-start, depth, obj = raw.find("{"), 0, None
-if start >= 0:
-    for i in range(start, len(raw)):
-        if raw[i] == "{": depth += 1
-        elif raw[i] == "}":
-            depth -= 1
-            if depth == 0:
-                try: obj = json.loads(raw[start:i + 1])
-                except Exception: obj = None
-                break
-# A review that cannot be read is not a pass. Treat it as needing a look.
-if obj is None:
-    obj = {"verdict": "unreadable", "findings": []}
-io.open(sys.argv[2], "w", encoding="utf-8").write(json.dumps(obj, indent=2))
-print(obj.get("verdict", "?"), len(obj.get("findings", [])), "finding(s)")
-PY
+# Reading the reply is fiddly enough to deserve its own file and its own
+# tests: braces inside a quoted string, prose around the object, a findings
+# field that is not a list. See parse_review.py.
+python "$PIPE/parse_review.py" "$CYCLE_DIR/review.json" "$CYCLE_DIR/findings.json"
 
 VERDICT="$(python -c "import json,sys;print(json.load(open(sys.argv[1]))['verdict'])" "$CYCLE_DIR/findings.json")"
 N_FIND="$(python -c "import json,sys;print(len(json.load(open(sys.argv[1]))['findings']))" "$CYCLE_DIR/findings.json")"
