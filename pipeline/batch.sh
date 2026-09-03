@@ -26,7 +26,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/models.sh"
 
-BATCH="${BATCH:-3}"
+BATCH="${BATCH:-1}"
 PUSH="${PUSH:-0}"
 WORKTREES="$ROOT/../nyx-worktrees"
 
@@ -70,7 +70,8 @@ git commit -qm "pipeline: claim ${ids[*]}" || true
 
 one_task() {
   local id="$1" author="$2" title="$3"
-  local reviewer; [ "$author" = claude ] && reviewer=codex || reviewer=claude
+  author="$(author_for "$author")"
+  local reviewer; reviewer="$(reviewer_for "$author")"
 
   local wt="$WORKTREES/$id"
   local dir="$STATE/$id"

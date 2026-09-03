@@ -36,10 +36,11 @@ AUTHOR="${rest%%|*}"
 TITLE="${rest#*|}"
 
 case "$AUTHOR" in
-  claude) REVIEWER=codex  ;;
-  codex)  REVIEWER=claude ;;
+  claude|codex) ;;
   *) die "task $TASK_ID has no usable author (got '$AUTHOR')" ;;
 esac
+AUTHOR="$(author_for "$AUTHOR")"
+REVIEWER="$(reviewer_for "$AUTHOR")"
 
 CYCLE_DIR="$STATE/$TASK_ID"
 mkdir -p "$CYCLE_DIR"
