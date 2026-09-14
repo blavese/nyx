@@ -28,7 +28,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/models.sh"
 
 BATCH="${BATCH:-1}"
 PUSH="${PUSH:-0}"
-WORKTREES="$ROOT/../nyx-worktrees"
+WORKTREES="$ROOT/../zelr-worktrees"
 
 cd "$ROOT"
 if ! git diff --quiet || ! git diff --cached --quiet; then

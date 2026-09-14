@@ -1,6 +1,6 @@
 # Answering a review
 
-Another model reviewed your change to nyx. It did not write the code and has
+Another model reviewed your change to zelr. It did not write the code and has
 no stake in it.
 
 ## What you were doing

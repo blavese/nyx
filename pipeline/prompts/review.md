@@ -1,6 +1,6 @@
 # Reviewing one change
 
-You are reviewing a change to nyx, an operating system written entirely from
+You are reviewing a change to zelr, an operating system written entirely from
 scratch. You did not write this change. That is the point: the author's own
 tests already passed, so anything left is what those tests do not look at.
 

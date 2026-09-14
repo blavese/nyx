@@ -1,6 +1,6 @@
 # Implementing one task
 
-You are working on nyx, an operating system written entirely from scratch:
+You are working on zelr, an operating system written entirely from scratch:
 its own bootloaders, paging, scheduler, FAT16 driver, TCP stack, window
 manager and font. Read `README.md` first if you have not already.
 

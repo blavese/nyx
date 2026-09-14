@@ -1,6 +1,6 @@
 # The pipeline
 
-Two models working on nyx without a person in the loop, and a gate neither
+Two models working on zelr without a person in the loop, and a gate neither
 of them can talk its way past.
 
 ## Why it is shaped like this
@@ -123,7 +123,7 @@ failing kernel check (fails, exit 1), with a deliberate syntax error (fails,
 and stops rather than testing the previous build), and with the tree in a
 known good state (passes).
 
-If the build fails it stops there. `build/nyx.bin` is whatever the last
+If the build fails it stops there. `build/zelr.bin` is whatever the last
 successful build left behind, so carrying on would say something true about
 code that no longer exists.
 
