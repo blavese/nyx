@@ -204,7 +204,8 @@ $TITLE
 $(head -c 1200 "$CYCLE_DIR/author-report.txt")
 
 Written by $AUTHOR, reviewed by $REVIEWER, $N_FIND finding(s) answered.
-Passed the full gate: build, 213 kernel checks, the serial shell test, all
+Passed the full gate: build, 234 kernel checks, the serial shell test, the
+boot log across a reboot, all
 four boot paths, and the three harnesses that drive the desktop.
 EOF
 

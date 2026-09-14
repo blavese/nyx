@@ -76,7 +76,7 @@ than an accident.
 
 1. Takes the top `todo` task from `backlog.md` and makes a branch for it.
 2. The task's `author` writes the code.
-3. `gate.sh fast` runs: build, the kernel's 213 self checks, the serial shell
+3. `gate.sh fast` runs: build, the kernel's 234 self checks, the serial shell
    test. About five minutes. If it fails, the branch is deleted and the task
    is marked `blocked` with its logs kept.
 4. The *other* model reviews the diff and answers in JSON: sound, or a list
