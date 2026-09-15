@@ -60,8 +60,11 @@ write three changes at once without seeing each other's files, and the fast
 gate runs in each: it is a build and two QEMU runs with no monitor port, so
 several at a time contend for nothing but the processor. Then the branches
 that passed are merged onto one integration branch and the full gate runs
-**once for the batch**. It has to be serial anyway, because shotcheck,
-termcheck and deskcheck each drive QEMU's monitor on a fixed port.
+**once for the batch**.
+
+The screen harnesses used to need a fixed monitor port each, so two runs
+that overlapped drove each other's machines. They take a free port now, and
+the gate takes a lock so two of them cannot start at all.
 
 Three tasks a batch turns three forty minute cycles into roughly one.
 
